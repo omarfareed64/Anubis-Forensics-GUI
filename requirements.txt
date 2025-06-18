@@ -1,0 +1,38 @@
+# Core GUI Framework
+PyQt5==5.15.9
+PyQt5-Qt5==5.15.2
+PyQt5-sip==12.12.2
+
+# Backend Integration
+aiohttp==3.9.1
+requests==2.31.0
+urllib3==2.1.0
+
+# Security and Encryption
+paramiko==3.3.1
+cryptography==41.0.7
+
+# Data Handling and Serialization
+dataclasses-json==0.6.3
+pydantic==2.5.2
+
+# Async Support
+asyncio-mqtt==0.16.1
+
+# Development and Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-qt==4.2.0
+pytest-cov==4.1.0
+
+# Code Quality
+black==23.12.1
+flake8==6.1.0
+mypy==1.8.0
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==2.0.0
+
+# Optional: Build and Deployment
+pyinstaller==6.3.0 
