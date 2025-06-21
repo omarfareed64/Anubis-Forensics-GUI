@@ -166,6 +166,201 @@ Anubis-Forensics-GUI/
 - **Timeline Analysis**: USB device usage timeline reconstruction
 - **Registry Analysis**: USB device registry key examination
 
+## 🔍 **Five Forensic Analysis Options - Detailed Explanations**
+
+### **1. Memory Analysis (RAM Forensics)**
+
+**What is Memory Analysis?**
+Memory analysis, also known as RAM forensics or volatile memory forensics, involves the examination of a computer's random access memory (RAM) to extract digital evidence that exists only in volatile memory and is lost when the system is powered off.
+
+**Why is Memory Analysis Important?**
+- **Volatile Evidence**: Captures evidence that disappears when the system is shut down
+- **Running Processes**: Reveals currently running applications and their states
+- **Network Connections**: Shows active network connections and communication
+- **Encrypted Data**: May contain decrypted data that was encrypted on disk
+- **Malware Detection**: Identifies malicious processes and injected code
+- **User Activity**: Captures user sessions, passwords, and recent activities
+
+**How Memory Analysis Works:**
+1. **Memory Acquisition**: Using tools like WinPmem to create a memory dump
+2. **Profile Detection**: Identifying the operating system version and architecture
+3. **Process Analysis**: Extracting running processes, their memory maps, and loaded modules
+4. **Network Analysis**: Identifying active network connections and listening ports
+5. **String Extraction**: Searching for meaningful text strings in memory
+6. **Artifact Recovery**: Extracting files, registry hives, and other artifacts from memory
+
+**Key Artifacts Revealed:**
+- **Running Processes**: List of all active processes with PIDs and memory addresses
+- **Network Connections**: Active TCP/UDP connections and associated processes
+- **Loaded DLLs**: Dynamic link libraries loaded by processes
+- **Command History**: Recently executed commands and command line arguments
+- **Encryption Keys**: Cryptographic keys and certificates in memory
+- **Browser Data**: Passwords, cookies, and session data from web browsers
+- **Malware Artifacts**: Suspicious processes, injected code, and rootkits
+
+**Forensic Value:**
+Memory analysis provides a "snapshot" of system activity at the time of acquisition, revealing what was happening on the system when the memory dump was taken. This is crucial for incident response, malware analysis, and understanding user behavior patterns.
+
+---
+
+### **2. Web Artifact Analysis (Browser Forensics)**
+
+**What is Web Artifact Analysis?**
+Web artifact analysis involves the examination of web browser data to reconstruct a user's online activities, including browsing history, downloads, bookmarks, cookies, and other web-related artifacts stored by browsers.
+
+**Why is Web Artifact Analysis Important?**
+- **User Behavior**: Reveals user's online activities and interests
+- **Timeline Reconstruction**: Provides chronological evidence of web browsing
+- **Evidence Preservation**: Captures web-based evidence that may be deleted from servers
+- **Authentication Data**: Contains login credentials and session information
+- **Download History**: Shows files downloaded and their sources
+- **Search Queries**: Reveals search terms and visited websites
+
+**How Web Artifact Analysis Works:**
+1. **Browser Identification**: Locating browser profile directories
+2. **Database Extraction**: Accessing browser databases (SQLite files)
+3. **History Analysis**: Parsing browsing history and download records
+4. **Cookie Examination**: Extracting authentication and tracking cookies
+5. **Bookmark Analysis**: Recovering saved bookmarks and favorites
+6. **Cache Analysis**: Examining cached web pages and resources
+7. **Form Data**: Extracting saved form data and autofill information
+
+**Key Artifacts Revealed:**
+- **Browsing History**: URLs visited, page titles, and timestamps
+- **Download Records**: Files downloaded, sources, and completion times
+- **Cookies**: Authentication tokens, session data, and tracking information
+- **Bookmarks**: Saved websites and folder structures
+- **Search Queries**: Terms searched in various search engines
+- **Login Credentials**: Saved usernames and encrypted passwords
+- **Form Data**: Auto-filled information and saved form entries
+- **Cache Files**: Cached web pages, images, and other resources
+
+**Forensic Value:**
+Web artifacts provide a comprehensive picture of a user's online activities, including websites visited, searches performed, files downloaded, and authentication patterns. This information is crucial for investigations involving cybercrime, fraud, intellectual property theft, and general user activity analysis.
+
+---
+
+### **3. Registry Analysis (Windows Registry Forensics)**
+
+**What is Registry Analysis?**
+Registry analysis involves the examination of the Windows Registry, a hierarchical database that stores configuration settings and options for the Windows operating system and installed applications. The registry contains a wealth of forensic information about system activity and user behavior.
+
+**Why is Registry Analysis Important?**
+- **System Configuration**: Reveals system settings and installed software
+- **User Activity**: Tracks user actions and application usage
+- **Startup Programs**: Identifies programs that start automatically
+- **Device History**: Records connected hardware and devices
+- **Network Information**: Contains network configuration and connection history
+- **Security Settings**: Shows security policies and access controls
+- **Timeline Evidence**: Provides timestamps for various system events
+
+**How Registry Analysis Works:**
+1. **Hive Identification**: Locating registry hive files (SYSTEM, SOFTWARE, SAM, etc.)
+2. **Key Enumeration**: Navigating through registry key hierarchies
+3. **Value Extraction**: Reading registry values and their data
+4. **Timeline Analysis**: Examining timestamps associated with registry keys
+5. **Cross-Reference Analysis**: Correlating data across multiple registry locations
+6. **Deleted Key Recovery**: Attempting to recover deleted registry entries
+
+**Key Artifacts Revealed:**
+- **UserAssist Keys**: Program execution history and frequency
+- **Run Keys**: Programs configured to start automatically
+- **USB Device History**: Connected USB devices and their timestamps
+- **Network Connections**: Network adapter settings and connection history
+- **Installed Software**: List of installed applications and their versions
+- **System Information**: Hardware configuration and system details
+- **Security Settings**: Password policies and access controls
+- **Recent Documents**: Recently accessed files and applications
+- **Shell Bags**: User interface customization and folder views
+
+**Forensic Value:**
+The Windows Registry serves as a comprehensive log of system activity, providing evidence of user actions, system changes, and application behavior. Registry analysis can reveal when programs were installed, when devices were connected, and what activities occurred on the system over time.
+
+---
+
+### **4. USB Device Analysis (USB Forensics)**
+
+**What is USB Device Analysis?**
+USB device analysis involves the examination of artifacts related to USB device connections, including device identification, connection history, and usage patterns. This analysis helps reconstruct when USB devices were connected to a system and what activities occurred with them.
+
+**Why is USB Device Analysis Important?**
+- **Device Tracking**: Identifies USB devices that have been connected to the system
+- **Timeline Reconstruction**: Provides chronological evidence of device usage
+- **Data Transfer Evidence**: Shows when devices were connected and potentially used for data transfer
+- **Device Identification**: Reveals device types, manufacturers, and serial numbers
+- **Security Investigations**: Important for cases involving data theft or unauthorized access
+- **Compliance**: Helps verify device usage policies and compliance requirements
+
+**How USB Device Analysis Works:**
+1. **Registry Examination**: Analyzing USB-related registry keys
+2. **SetupAPI Log Analysis**: Reviewing device installation logs
+3. **Event Log Analysis**: Examining system event logs for USB events
+4. **Device Enumeration**: Identifying connected and previously connected devices
+5. **Timeline Construction**: Creating chronological timeline of device usage
+6. **Metadata Extraction**: Gathering device information and connection details
+
+**Key Artifacts Revealed:**
+- **Device Identifiers**: Vendor IDs, product IDs, and serial numbers
+- **Connection History**: When devices were first and last connected
+- **Device Types**: Storage devices, input devices, network adapters, etc.
+- **Driver Information**: Installed drivers and device drivers
+- **Mount Points**: Drive letters assigned to storage devices
+- **Usage Patterns**: Frequency and duration of device connections
+- **Device Names**: User-assigned names and device descriptions
+- **Firmware Information**: Device firmware versions and capabilities
+
+**Forensic Value:**
+USB device analysis provides crucial evidence in cases involving data theft, unauthorized access, or device usage investigations. It can help establish timelines of device usage, identify specific devices involved in incidents, and provide evidence of data transfer activities.
+
+---
+
+### **5. SRUM Analysis (System Resource Usage Monitor)**
+
+**What is SRUM Analysis?**
+SRUM (System Resource Usage Monitor) analysis involves the examination of Windows' built-in system monitoring database that tracks application usage, network activity, and energy consumption. SRUM provides detailed information about how system resources are used over time.
+
+**Why is SRUM Analysis Important?**
+- **Application Usage**: Reveals which applications were used and for how long
+- **Network Activity**: Tracks network usage patterns and data transfer
+- **Energy Consumption**: Shows power usage patterns and battery information
+- **User Behavior**: Provides insights into user activity patterns
+- **System Performance**: Indicates system resource utilization
+- **Timeline Evidence**: Offers detailed chronological data about system usage
+- **Compliance Monitoring**: Helps verify software usage compliance
+
+**How SRUM Analysis Works:**
+1. **Database Location**: Locating the SRUM database file (Windows\System32\sru\SRUDB.dat)
+2. **Database Access**: Using specialized tools to access the SQLite database
+3. **Query Execution**: Running SQL queries to extract usage data
+4. **Data Parsing**: Converting raw data into meaningful forensic information
+5. **Timeline Analysis**: Creating chronological usage patterns
+6. **Cross-Reference Analysis**: Correlating data with other forensic sources
+
+**Key Artifacts Revealed:**
+- **Application Usage**: Programs executed, duration, and frequency
+- **Network Statistics**: Bytes sent/received, connection durations
+- **Energy Data**: Power consumption, battery levels, and charging events
+- **User Sessions**: Login/logout times and session durations
+- **Resource Utilization**: CPU, memory, and disk usage patterns
+- **Network Interfaces**: Active network adapters and their usage
+- **Application Performance**: Response times and resource consumption
+- **System Events**: System startup, shutdown, and maintenance events
+
+**Forensic Value:**
+SRUM analysis provides a comprehensive view of system usage patterns, offering detailed evidence about application usage, network activity, and system behavior over time. This information is valuable for understanding user behavior, investigating system performance issues, and establishing usage patterns in forensic investigations.
+
+---
+
+**Integration and Cross-Analysis:**
+The five analysis options work together to provide a comprehensive forensic picture:
+- **Memory + Registry**: Correlating running processes with registry entries
+- **Web + USB**: Linking web downloads with USB device connections
+- **SRUM + Registry**: Connecting application usage with system configuration
+- **Timeline Reconstruction**: Creating unified timelines across all analysis types
+- **Evidence Correlation**: Cross-referencing findings for stronger conclusions
+
+This multi-faceted approach ensures that no digital evidence is overlooked and provides investigators with the most complete picture possible of system activity and user behavior.
+
 ## 🔌 Backend API Integration
 
 ### API Client Usage
@@ -950,6 +1145,201 @@ class WebArtifactAnalysisEngine:
             return []
 ```
 
+#### **Detailed Analysis Options Explanations**
+
+**1. Memory Analysis (RAM Forensics)**
+
+**What is Memory Analysis?**
+Memory analysis, also known as RAM forensics or volatile memory forensics, involves the examination of a computer's random access memory (RAM) to extract digital evidence that exists only in volatile memory and is lost when the system is powered off.
+
+**Why is Memory Analysis Important?**
+- **Volatile Evidence**: Captures evidence that disappears when the system is shut down
+- **Running Processes**: Reveals currently running applications and their states
+- **Network Connections**: Shows active network connections and communication
+- **Encrypted Data**: May contain decrypted data that was encrypted on disk
+- **Malware Detection**: Identifies malicious processes and injected code
+- **User Activity**: Captures user sessions, passwords, and recent activities
+
+**How Memory Analysis Works:**
+1. **Memory Acquisition**: Using tools like WinPmem to create a memory dump
+2. **Profile Detection**: Identifying the operating system version and architecture
+3. **Process Analysis**: Extracting running processes, their memory maps, and loaded modules
+4. **Network Analysis**: Identifying active network connections and listening ports
+5. **String Extraction**: Searching for meaningful text strings in memory
+6. **Artifact Recovery**: Extracting files, registry hives, and other artifacts from memory
+
+**Key Artifacts Revealed:**
+- **Running Processes**: List of all active processes with PIDs and memory addresses
+- **Network Connections**: Active TCP/UDP connections and associated processes
+- **Loaded DLLs**: Dynamic link libraries loaded by processes
+- **Command History**: Recently executed commands and command line arguments
+- **Encryption Keys**: Cryptographic keys and certificates in memory
+- **Browser Data**: Passwords, cookies, and session data from web browsers
+- **Malware Artifacts**: Suspicious processes, injected code, and rootkits
+
+**Forensic Value:**
+Memory analysis provides a "snapshot" of system activity at the time of acquisition, revealing what was happening on the system when the memory dump was taken. This is crucial for incident response, malware analysis, and understanding user behavior patterns.
+
+---
+
+**2. Web Artifact Analysis (Browser Forensics)**
+
+**What is Web Artifact Analysis?**
+Web artifact analysis involves the examination of web browser data to reconstruct a user's online activities, including browsing history, downloads, bookmarks, cookies, and other web-related artifacts stored by browsers.
+
+**Why is Web Artifact Analysis Important?**
+- **User Behavior**: Reveals user's online activities and interests
+- **Timeline Reconstruction**: Provides chronological evidence of web browsing
+- **Evidence Preservation**: Captures web-based evidence that may be deleted from servers
+- **Authentication Data**: Contains login credentials and session information
+- **Download History**: Shows files downloaded and their sources
+- **Search Queries**: Reveals search terms and visited websites
+
+**How Web Artifact Analysis Works:**
+1. **Browser Identification**: Locating browser profile directories
+2. **Database Extraction**: Accessing browser databases (SQLite files)
+3. **History Analysis**: Parsing browsing history and download records
+4. **Cookie Examination**: Extracting authentication and tracking cookies
+5. **Bookmark Analysis**: Recovering saved bookmarks and favorites
+6. **Cache Analysis**: Examining cached web pages and resources
+7. **Form Data**: Extracting saved form data and autofill information
+
+**Key Artifacts Revealed:**
+- **Browsing History**: URLs visited, page titles, and timestamps
+- **Download Records**: Files downloaded, sources, and completion times
+- **Cookies**: Authentication tokens, session data, and tracking information
+- **Bookmarks**: Saved websites and folder structures
+- **Search Queries**: Terms searched in various search engines
+- **Login Credentials**: Saved usernames and encrypted passwords
+- **Form Data**: Auto-filled information and saved form entries
+- **Cache Files**: Cached web pages, images, and other resources
+
+**Forensic Value:**
+Web artifacts provide a comprehensive picture of a user's online activities, including websites visited, searches performed, files downloaded, and authentication patterns. This information is crucial for investigations involving cybercrime, fraud, intellectual property theft, and general user activity analysis.
+
+---
+
+**3. Registry Analysis (Windows Registry Forensics)**
+
+**What is Registry Analysis?**
+Registry analysis involves the examination of the Windows Registry, a hierarchical database that stores configuration settings and options for the Windows operating system and installed applications. The registry contains a wealth of forensic information about system activity and user behavior.
+
+**Why is Registry Analysis Important?**
+- **System Configuration**: Reveals system settings and installed software
+- **User Activity**: Tracks user actions and application usage
+- **Startup Programs**: Identifies programs that start automatically
+- **Device History**: Records connected hardware and devices
+- **Network Information**: Contains network configuration and connection history
+- **Security Settings**: Shows security policies and access controls
+- **Timeline Evidence**: Provides timestamps for various system events
+
+**How Registry Analysis Works:**
+1. **Hive Identification**: Locating registry hive files (SYSTEM, SOFTWARE, SAM, etc.)
+2. **Key Enumeration**: Navigating through registry key hierarchies
+3. **Value Extraction**: Reading registry values and their data
+4. **Timeline Analysis**: Examining timestamps associated with registry keys
+5. **Cross-Reference Analysis**: Correlating data across multiple registry locations
+6. **Deleted Key Recovery**: Attempting to recover deleted registry entries
+
+**Key Artifacts Revealed:**
+- **UserAssist Keys**: Program execution history and frequency
+- **Run Keys**: Programs configured to start automatically
+- **USB Device History**: Connected USB devices and their timestamps
+- **Network Connections**: Network adapter settings and connection history
+- **Installed Software**: List of installed applications and their versions
+- **System Information**: Hardware configuration and system details
+- **Security Settings**: Password policies and access controls
+- **Recent Documents**: Recently accessed files and applications
+- **Shell Bags**: User interface customization and folder views
+
+**Forensic Value:**
+The Windows Registry serves as a comprehensive log of system activity, providing evidence of user actions, system changes, and application behavior. Registry analysis can reveal when programs were installed, when devices were connected, and what activities occurred on the system over time.
+
+---
+
+**4. USB Device Analysis (USB Forensics)**
+
+**What is USB Device Analysis?**
+USB device analysis involves the examination of artifacts related to USB device connections, including device identification, connection history, and usage patterns. This analysis helps reconstruct when USB devices were connected to a system and what activities occurred with them.
+
+**Why is USB Device Analysis Important?**
+- **Device Tracking**: Identifies USB devices that have been connected to the system
+- **Timeline Reconstruction**: Provides chronological evidence of device usage
+- **Data Transfer Evidence**: Shows when devices were connected and potentially used for data transfer
+- **Device Identification**: Reveals device types, manufacturers, and serial numbers
+- **Security Investigations**: Important for cases involving data theft or unauthorized access
+- **Compliance**: Helps verify device usage policies and compliance requirements
+
+**How USB Device Analysis Works:**
+1. **Registry Examination**: Analyzing USB-related registry keys
+2. **SetupAPI Log Analysis**: Reviewing device installation logs
+3. **Event Log Analysis**: Examining system event logs for USB events
+4. **Device Enumeration**: Identifying connected and previously connected devices
+5. **Timeline Construction**: Creating chronological timeline of device usage
+6. **Metadata Extraction**: Gathering device information and connection details
+
+**Key Artifacts Revealed:**
+- **Device Identifiers**: Vendor IDs, product IDs, and serial numbers
+- **Connection History**: When devices were first and last connected
+- **Device Types**: Storage devices, input devices, network adapters, etc.
+- **Driver Information**: Installed drivers and device drivers
+- **Mount Points**: Drive letters assigned to storage devices
+- **Usage Patterns**: Frequency and duration of device connections
+- **Device Names**: User-assigned names and device descriptions
+- **Firmware Information**: Device firmware versions and capabilities
+
+**Forensic Value:**
+USB device analysis provides crucial evidence in cases involving data theft, unauthorized access, or device usage investigations. It can help establish timelines of device usage, identify specific devices involved in incidents, and provide evidence of data transfer activities.
+
+---
+
+**5. SRUM Analysis (System Resource Usage Monitor)**
+
+**What is SRUM Analysis?**
+SRUM (System Resource Usage Monitor) analysis involves the examination of Windows' built-in system monitoring database that tracks application usage, network activity, and energy consumption. SRUM provides detailed information about how system resources are used over time.
+
+**Why is SRUM Analysis Important?**
+- **Application Usage**: Reveals which applications were used and for how long
+- **Network Activity**: Tracks network usage patterns and data transfer
+- **Energy Consumption**: Shows power usage patterns and battery information
+- **User Behavior**: Provides insights into user activity patterns
+- **System Performance**: Indicates system resource utilization
+- **Timeline Evidence**: Offers detailed chronological data about system usage
+- **Compliance Monitoring**: Helps verify software usage compliance
+
+**How SRUM Analysis Works:**
+1. **Database Location**: Locating the SRUM database file (Windows\System32\sru\SRUDB.dat)
+2. **Database Access**: Using specialized tools to access the SQLite database
+3. **Query Execution**: Running SQL queries to extract usage data
+4. **Data Parsing**: Converting raw data into meaningful forensic information
+5. **Timeline Analysis**: Creating chronological usage patterns
+6. **Cross-Reference Analysis**: Correlating data with other forensic sources
+
+**Key Artifacts Revealed:**
+- **Application Usage**: Programs executed, duration, and frequency
+- **Network Statistics**: Bytes sent/received, connection durations
+- **Energy Data**: Power consumption, battery levels, and charging events
+- **User Sessions**: Login/logout times and session durations
+- **Resource Utilization**: CPU, memory, and disk usage patterns
+- **Network Interfaces**: Active network adapters and their usage
+- **Application Performance**: Response times and resource consumption
+- **System Events**: System startup, shutdown, and maintenance events
+
+**Forensic Value:**
+SRUM analysis provides a comprehensive view of system usage patterns, offering detailed evidence about application usage, network activity, and system behavior over time. This information is valuable for understanding user behavior, investigating system performance issues, and establishing usage patterns in forensic investigations.
+
+---
+
+**Integration and Cross-Analysis:**
+The five analysis options work together to provide a comprehensive forensic picture:
+- **Memory + Registry**: Correlating running processes with registry entries
+- **Web + USB**: Linking web downloads with USB device connections
+- **SRUM + Registry**: Connecting application usage with system configuration
+- **Timeline Reconstruction**: Creating unified timelines across all analysis types
+- **Evidence Correlation**: Cross-referencing findings for stronger conclusions
+
+This multi-faceted approach ensures that no digital evidence is overlooked and provides investigators with the most complete picture possible of system activity and user behavior.
+
 ### 4.3 Verification
 
 #### **Requirements Satisfaction Analysis**
@@ -1181,7 +1571,7 @@ class WebArtifactAnalysisEngine:
 | **Registry Analysis** | ✅ Comprehensive registry parsing | ✅ Built-in registry analysis |
 | **SRUM Analysis** | ✅ System Resource Usage Monitor | ❌ Limited SRUM support |
 | **USB Analysis** | ✅ USB device timeline reconstruction | ✅ USB device analysis |
-| **Web Artifact Analysis** | ✅ Multi-browser support | ✅ Web artifact extraction |
+| **Web Analysis** | ✅ Multi-browser support | ✅ Web artifact extraction |
 | **AI Integration** | ✅ OpenAI GPT integration | ❌ Limited AI features |
 | **Cost** | ✅ Open source | ❌ Commercial license |
 | **Customization** | ✅ Highly customizable | ❌ Limited customization |
