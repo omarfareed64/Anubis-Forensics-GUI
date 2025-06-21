@@ -446,4 +446,124 @@ For support and questions:
 
 ---
 
-**Note**: This application is designed for forensic analysis and should be used in accordance with legal and ethical guidelines. Ensure proper authorization before conducting any forensic investigations. 
+**Note**: This application is designed for forensic analysis and should be used in accordance with legal and ethical guidelines. Ensure proper authorization before conducting any forensic investigations.
+
+## Features
+
+### Case Management
+- Create new cases with detailed metadata
+- Browse and manage existing cases
+- Add evidence to existing cases
+- Organized case folder structure
+
+### Remote File Browser
+- Connect to remote machines using Windows credentials
+- Browse remote file systems through embedded web UI
+- Secure remote file access and management
+- Automatic cleanup of remote services
+
+### Local Evidence Collection
+- Local image acquisition
+- Evidence file management
+- Resource collection tools
+
+## Installation
+
+1. Clone the repository
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+### Remote File Browser Setup
+
+To use the remote file browser functionality, you'll need:
+
+1. **filebrowser.exe** - Place this executable in the project root directory
+2. **PsExec.exe** - Ensure this is available in your system PATH
+3. **pywebview** - Install with: `pip install pywebview`
+
+## Usage
+
+### Remote File Browser
+
+1. **Navigate to Remote Acquisition**:
+   - Go to Resource → Remote Acquisition
+   - Fill in the connection details:
+     - Agent Name: Name for this connection
+     - Agent Location: Local folder for agent files
+     - IP Address: Target machine IP
+     - Domain: Windows domain (default: WORKGROUP)
+     - Username: Remote machine username
+     - Password: Remote machine password
+
+2. **Connect**:
+   - Click "Connect" to establish the remote connection
+   - The system will:
+     - Connect to the remote C$ share
+     - Copy filebrowser.exe to the remote machine
+     - Start the file browser service on port 8080
+
+3. **Browse Files**:
+   - Navigate to Remote Connection page
+   - Click "FILES & FOLDERS" card
+   - An embedded web browser window will open showing the remote file system
+   - Browse, download, or manage files through the web interface
+
+4. **Cleanup**:
+   - When you click "Back", the system automatically:
+     - Stops the remote filebrowser service
+     - Removes temporary files
+     - Cleans up the connection
+
+### Case Management
+
+1. **Create New Case**:
+   - Click "Create New Case" on the home page
+   - Fill in case details (number, name, files location, etc.)
+   - Click "Create Case" to save
+
+2. **Browse Cases**:
+   - Click "Browse Recent Cases" to view all created cases
+   - Search and filter cases by number, name, or folder
+   - Double-click to view case details
+
+3. **Add Evidence**:
+   - Click "Add Evidence to Existing Case"
+   - Select a case from the list
+   - Navigate to Resource page to collect evidence
+   - Evidence will be stored in the selected case folder
+
+## File Structure
+
+```
+cases/
+├── case_number_case_name/
+│   ├── info.json          # Case metadata
+│   └── evidence/          # Evidence files
+│       ├── evidence_1.json
+│       └── evidence_2.json
+```
+
+## Requirements
+
+- Windows OS (for remote file browser functionality)
+- Python 3.8+
+- Administrative privileges (for remote connections)
+- Network access to target machines
+
+## Troubleshooting
+
+### Remote Connection Issues
+- Ensure target machine allows remote connections
+- Verify credentials have administrative privileges
+- Check firewall settings on target machine
+- Ensure PsExec.exe is available in system PATH
+
+### Web UI Issues
+- Install pywebview: `pip install pywebview`
+- If webview fails, access the file browser directly at `http://[IP]:8080`
+
+## License
+
+[Add your license information here] 

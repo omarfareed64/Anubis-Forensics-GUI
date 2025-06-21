@@ -12,7 +12,7 @@ class SplashScreen(QWidget):
         super().__init__()
         self.setWindowTitle("Anubis Forensics")
         self.setFixedSize(1200, 900)
-        self.setStyleSheet("background-color: #0d1117;")
+        self.setStyleSheet("background-color: #1D252D;")
         self.on_begin_callback = on_begin_callback
 
         layout = QVBoxLayout()

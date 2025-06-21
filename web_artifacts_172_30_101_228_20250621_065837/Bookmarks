@@ -1,0 +1,62 @@
+{
+   "checksum": "140af19a84eabdf896cb045ce1aa746c",
+   "roots": {
+      "bookmark_bar": {
+         "children": [ {
+            "date_added": "13394788090710413",
+            "date_last_used": "0",
+            "guid": "debfae7a-4edc-4b20-8ab2-0f7364c6d42a",
+            "id": "5",
+            "name": "https://www.bing.com/newtabredir?url=https%3A%2F%2Fsse.aucegypt.edu%2Fcenters-labs%2FCND%2Fmeet-team",
+            "show_icon": false,
+            "source": "user_add",
+            "type": "url",
+            "url": "https://www.bing.com/images/search?view=detailV2&ccid=Tklfbjty&id=B729BD624F9CDD2E11CEEE7364309E93F5AB2E42&thid=OIP.TklfbjtyjDF3KG92N6--QAAAAA&mediaurl=https%3A%2F%2Fsse.aucegypt.edu%2Fsites%2Fsse.aucegypt.edu%2Ffiles%2Fstyles%2Ffaculty_profile_345_420_%2Fpublic%2F2022-03%2Fsameh_sherif.png%3Fh%3D98d62943%26itok%3D67CNxShG&cdnurl=https%3A%2F%2Fth.bing.com%2Fth%2Fid%2FR.4e495f6e3b728c3177286f7637afbe40%3Frik%3DQi6r9ZOeMGRz7g%26pid%3DImgRaw%26r%3D0&exph=205&expw=273&q=sameh+shrief&simid=608010543822689760&FORM=IRPRST&ck=ED65CD15F33BFFBA1ED4A10F29235EE8&selectedIndex=2&itb=0&cw=922&ch=584&mode=overlay",
+            "visit_count": 0
+         }, {
+            "date_added": "13394946394897174",
+            "date_last_used": "0",
+            "guid": "de798685-8915-4b14-8732-7defacb9a199",
+            "id": "8",
+            "name": "Facebook – log in or sign up",
+            "show_icon": false,
+            "source": "unknown",
+            "type": "url",
+            "url": "https://www.facebook.com/",
+            "visit_count": 0
+         } ],
+         "date_added": "13394787966741615",
+         "date_last_used": "0",
+         "date_modified": "13394946394897174",
+         "guid": "0bc5d13f-2cba-5d74-951f-3f233fe6c908",
+         "id": "1",
+         "name": "Favorites bar",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "other": {
+         "children": [  ],
+         "date_added": "13394787966741617",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "82b081ec-3dd3-529c-8475-ab6c344590dd",
+         "id": "2",
+         "name": "Other favorites",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "synced": {
+         "children": [  ],
+         "date_added": "13394787966741618",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "4cf2e351-0e85-532b-bb37-df045d8f8d0f",
+         "id": "3",
+         "name": "Mobile favorites",
+         "source": "unknown",
+         "type": "folder"
+      }
+   },
+   "sync_metadata": "CpsBCh4IiIECEgi/AoCQlwEAACoOEAAYASABKAkwADgAQAASABpYY3h3WmpvdVQ5SlVwRE9rS3dRbVNScFVMTy8rWlNlM0hmUnVNSHArQjJpNlpFRTU1U0NKaE5rOU1ubEpFamlXdy91UWRuUWpUNzlwcXp2NFhoZU5FNGc9PSoYUTNvYjkrc0J4bkRsWUNzQWkyNUJKdz09SAOgBgwSjgEIARKJAQoceXhKLzZmdmtlY3I3a3A1RVF6QjR0V0xwZGJFPRIkZmU0MjA0MDMtYzYyNy01N2FkLTg0MWItZWRiOGE5NWE3ZWEzGAAgACgAMODy/4P5Mjiu9v+D+TJArvb/g/kyShxhUkNXTGdoRjliNUlucUtJRHZ1Si9qdlFrRmM9WgBlAAAAAMI+AmAAEo4BCAISiQEKHFljU1RvbnZFU1B3cUNzNEwyY3JWaHY2OEw5OD0SJDI4ODg5MjdlLTliODYtNTg0Yy05ZTkwLWZmZTBhYmUyMjlmMxgAIAAoADDh8v+D+TI4y/b/g/kyQMv2/4P5Mkocb1BWa2h3QlJiVjY1S0NXUjIrSU9OSFdvT3U4PVoAZQAAAADCPgJgABKxAQgIEqwBChxGWE5PQmpGN1N5anNIRTI3RDluVTJqNXhXUGM9EiRkZTc5ODY4NS04OTE1LTRiMTQtODczMi03ZGVmYWNiOWExOTkYACABKAAw////////////ATiP9IGE+TJAj/SBhPkyShw1VDZCY2t0MWxiR0IzM1ZqaUlSWWdzdmFKdW89Wh8iHbtML2NVZjB2YVQzSFlMYjdRdTZLZHRiYmRoeGc9ZQAAAADCPgJgABKwAQgFEqsBChxFNCs3M2VFNnZRYXd1UkhiSkpxNWxRZkxYQk09EiRkZWJmYWU3YS00ZWRjLTRiMjAtOGFiMi0wZjczNjRjNmQ0MmEYACABKAAw////////////ATiP9IGE+TJAj/SBhPkyShxOancyK2JhaWpnc29lQ2tWd2JoQmtpNVlyR2M9Wh4iHHZMR2ZXQlJyZkV0MEhKZWg0WFRhT3JoL1dqTT1lAAAAAMI+AmAGEo4BCAMSiQEKHG5qZ0R1ODhlQ3J2WHA4NnBEN2ZIR2NxRnA4OD0SJGRiODJhYmU0LTM1NzEtNWFhMi04NzYzLWJlNDMwZTlhNmVlNhgAIAAoADDm8v+D+TI4hPf/g/kyQIT3/4P5MkoceXpOQjAxY241NEE3Y1JVMHVUKy9QZ21UdFVvPVoAZQAAAADCPgJgADAAOAA=",
+   "version": 1
+}

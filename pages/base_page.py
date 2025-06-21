@@ -13,7 +13,7 @@ COLOR_DARK = "#23292f"
 COLOR_GRAY = "#e5e5e5"
 
 # Common tab names used across pages
-TAB_NAMES = ["Case Info", "Resource", "Artifact Details", "Analyze Evidence"]
+TAB_NAMES = ["Case Info", "Resource", "Analyze Evidence", "Report"]
 
 class BasePage(QWidget):
     tab_selected = pyqtSignal(str)
