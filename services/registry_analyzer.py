@@ -16,10 +16,10 @@ class RegistryAnalyzer(QObject):
     
     def __init__(self):
         super().__init__()
-        # Fix paths to use correct relative paths from the GUI directory
+        # Use correct relative paths from the GUI directory
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        self.rawcopy_path = os.path.join(base_dir, "REGAutomated-Digital-Forensics-Tool", "RawCopy.exe")
-        self.rla_path = os.path.join(base_dir, "REGAutomated-Digital-Forensics-Tool", "rla.exe")
+        self.rawcopy_path = os.path.join(base_dir, "Anubis-Forensics-GUI", "RawCopy.exe")
+        self.rla_path = os.path.join(base_dir, "Anubis-Forensics-GUI", "rla.exe")
         
     def acquire_registry_hives(self, output_dir, selected_hives, username=""):
         """Acquire selected registry hives using RawCopy"""
