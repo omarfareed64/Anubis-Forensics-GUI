@@ -15,6 +15,9 @@ urllib3==2.1.0
 # Data & Parsing
 certifi==2023.11.17
 
+# Registry Analysis
+regipy==3.1.0
+
 # Security and Encryption
 paramiko==3.3.1
 cryptography==41.0.7

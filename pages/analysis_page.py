@@ -1,8 +1,10 @@
 import csv
+import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QComboBox, QGroupBox, QGridLayout,
-    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication
+    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication, QTextEdit,
+    QListWidget, QListWidgetItem, QScrollArea
 )
 from PyQt5.QtGui import QFont, QColor, QKeySequence
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal, QUrl
@@ -10,6 +12,7 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
 from services.web_artifact_extractor import extract_all_web_artifacts
 from services.usb_analyzer import get_usb_devices
+from services.registry_analyzer import RegistryAnalyzer
 from datetime import datetime, timedelta
 
 class WebArtifactThread(QThread):
@@ -39,6 +42,31 @@ class UsbDeviceThread(QThread):
         devices = get_usb_devices()
         self.finished.emit(devices)
 
+class RegistryWorker(QThread):
+    """Worker thread for registry operations"""
+    progress_updated = pyqtSignal(str)
+    operation_completed = pyqtSignal(str, bool, str)
+    header_output = pyqtSignal(str)  # For header parsing output
+    
+    def __init__(self, analyzer, operation, **kwargs):
+        super().__init__()
+        self.analyzer = analyzer
+        self.operation = operation
+        self.kwargs = kwargs
+        
+        # Connect the analyzer's signals to our signals
+        self.analyzer.progress_updated.connect(self.progress_updated.emit)
+        self.analyzer.operation_completed.connect(self.operation_completed.emit)
+        self.analyzer.header_output.connect(self.header_output.emit)
+        
+    def run(self):
+        # This will call the appropriate method on the RegistryAnalyzer instance
+        operation_func = getattr(self.analyzer, self.operation, None)
+        if operation_func:
+            # We need to unpack the kwargs dict to pass them as arguments
+            success, message = operation_func(**self.kwargs)
+            self.operation_completed.emit(self.operation, success, message)
+
 class AnalysisPage(BasePage):
     back_requested = pyqtSignal()
 
@@ -47,21 +75,32 @@ class AnalysisPage(BasePage):
         self.connection_params = None
         self.web_artifact_thread = None
         self.usb_device_thread = None
+        self.registry_worker_thread = None
+        self.registry_analyzer = RegistryAnalyzer() # Add analyzer instance
         self.usb_devices = [] # To store full list of devices
         self.displayed_usb_devices = [] # To store the currently visible list
+        self.selected_case_path = None
         self.setup_page_content()
         self._select_tab_programmatically("Analyze Evidence")
-        
-        # Set default font for message boxes
 
     def set_connection_params(self, params):
         """Receive and store connection parameters."""
         self.connection_params = params
 
+    def set_case_path(self, case_path):
+        self.selected_case_path = case_path
+        if case_path:
+            base_output = os.path.join(self.selected_case_path, "registry_analysis")
+            self.acquire_output_dir_input.setText(os.path.join(base_output, "acquired_hives"))
+            self.analyze_input_dir.setText(os.path.join(base_output, "acquired_hives"))
+            self.compare_output_dir.setText(os.path.join(base_output, "comparison_results"))
+            self.logs_output_dir.setText(os.path.join(base_output, "recovered_hives"))
+
     def _switch_right_panel_view(self, view_to_show):
         """Manages visibility of widgets in the right panel."""
         self.web_view.setVisible(self.web_view == view_to_show)
         self.usb_view_container.setVisible(self.usb_view_container == view_to_show)
+        self.registry_view_container.setVisible(self.registry_view_container == view_to_show)
         self.placeholder_label.setVisible(self.placeholder_label == view_to_show)
 
     def setup_page_content(self):
@@ -163,6 +202,7 @@ class AnalysisPage(BasePage):
         self.usb_search_box = QLineEdit()
         self.usb_search_box.setPlaceholderText("Type to filter devices...")
         self.usb_search_box.setClearButtonEnabled(True)
+
         self.usb_search_box.setFont(QFont("Segoe UI", 9))
         self.usb_search_box.textChanged.connect(self.apply_usb_filters)
 
@@ -181,7 +221,7 @@ class AnalysisPage(BasePage):
         self.forensic_button.setFont(QFont("Segoe UI", 9))
         self.forensic_button.clicked.connect(self.perform_forensic_analysis)
 
-        search_label = QLabel("Search:")
+        search_label = QLabel("Search")
         search_label.setFont(QFont("Segoe UI", 9))
         time_label = QLabel("Time Range:")
         time_label.setFont(QFont("Segoe UI", 9))
@@ -235,6 +275,10 @@ class AnalysisPage(BasePage):
 
         right_layout.addWidget(self.usb_view_container)
 
+        # --- Registry View Container ---
+        self.registry_view_container = self.create_registry_view()
+        right_layout.addWidget(self.registry_view_container)
+
         # Placeholder label for messages
         self.placeholder_label = QLabel("Select an artifact to view details")
         self.placeholder_label.setFont(QFont("Segoe UI", 16))
@@ -249,27 +293,31 @@ class AnalysisPage(BasePage):
         self._switch_right_panel_view(self.placeholder_label) # Show placeholder initially
 
     def on_artifact_button_click(self, artifact_name):
-        """Handle clicks on the artifact buttons."""
-        self._switch_right_panel_view(self.placeholder_label)
-        self.placeholder_label.setText(f"Gathering data for {artifact_name}...")
-
+        """Handle clicks on the left-side artifact buttons."""
         if artifact_name == "WEB":
             if not self.connection_params:
-                QMessageBox.warning(self, "Error", "Connection parameters not set for remote artifact extraction.")
-                self.placeholder_label.setText("Select an artifact to view details")
+                QMessageBox.warning(self, "No Connection", "Please establish a remote connection first.")
                 return
-
+            self.web_view.load(QUrl()) # Clear previous content
+            self._switch_right_panel_view(self.web_view)
             self.web_artifact_thread = WebArtifactThread(self.connection_params)
             self.web_artifact_thread.finished.connect(self.on_web_extraction_finished)
             self.web_artifact_thread.start()
-        
         elif artifact_name == "USB":
+            self._switch_right_panel_view(self.usb_view_container)
             self.usb_device_thread = UsbDeviceThread()
             self.usb_device_thread.finished.connect(self.on_usb_scan_finished)
             self.usb_device_thread.start()
-        
+        elif artifact_name == "REGISTRY":
+            if not self.selected_case_path:
+                QMessageBox.warning(self, "No Case Selected", "A case must be selected to perform registry analysis.")
+                return
+            # Update output paths before showing
+            self.set_case_path(self.selected_case_path)
+            self._switch_right_panel_view(self.registry_view_container)
         else:
-             self.placeholder_label.setText(f"Analysis for {artifact_name} is not yet implemented.")
+            self.placeholder_label.setText(f"{artifact_name} analysis not implemented yet.")
+            self._switch_right_panel_view(self.placeholder_label)
 
     def on_web_extraction_finished(self, result):
         """Handle finished signal from the web artifact extraction thread."""
@@ -461,6 +509,411 @@ class AnalysisPage(BasePage):
         # Potentially navigate to other pages. For now, just print.
         print(f"Tab clicked: {tab_text}")
         super()._handle_tab_click(clicked_button) 
+
+    # --- REGISTRY ANALYSIS METHODS ---
+    def create_registry_view(self):
+        """Creates the entire view for Registry Analysis options."""
+        container = QFrame()
+        container.setStyleSheet("background-color: transparent;")
+        
+        # Main content area
+        content_layout = QHBoxLayout(container)
+        
+        # Left panel - Options
+        left_panel = self.create_registry_options_panel()
+        content_layout.addWidget(left_panel, 1)
+        
+        # Right panel - Progress and Results
+        right_panel = self.create_registry_progress_panel()
+        content_layout.addWidget(right_panel, 1)
+        
+        return container
+
+    def create_registry_options_panel(self):
+        """Create the left panel with registry analysis options"""
+        panel = QScrollArea()
+        panel.setWidgetResizable(True)
+        panel.setStyleSheet("background: white; border-radius: 12px; padding: 10px; border: none;")
+        
+        content_widget = QWidget()
+        panel.setWidget(content_widget)
+        
+        layout = QVBoxLayout(content_widget)
+        
+        # Title
+        title = QLabel("Registry Analysis Options")
+        title.setFont(QFont("Cascadia Mono", 16, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {COLOR_DARK}; margin-bottom: 15px;")
+        layout.addWidget(title)
+        
+        # Option 1: Acquire Registry Hives
+        acquire_group = self.create_acquire_hives_group()
+        layout.addWidget(acquire_group)
+        
+        # Option 2: Analyze Registry Hives
+        analyze_group = self.create_analyze_hives_group()
+        layout.addWidget(analyze_group)
+        
+        # Option 3: Compare Registry Hives
+        compare_group = self.create_compare_hives_group()
+        layout.addWidget(compare_group)
+        
+        # Option 4: Apply Transaction Logs
+        logs_group = self.create_apply_logs_group()
+        layout.addWidget(logs_group)
+        
+        # Option 5: Parse Hive Header
+        header_group = self.create_parse_header_group()
+        layout.addWidget(header_group)
+        
+        layout.addStretch()
+        return panel
+
+    def _get_group_box_style(self):
+        return f"""
+            QGroupBox {{
+                border: 2px solid {COLOR_DARK};
+                border-radius: 8px;
+                margin-top: 15px;
+                padding: 15px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: {COLOR_DARK};
+                font-size: 14px;
+                font-weight: bold;
+            }}
+        """
+
+    def _create_small_browse_button(self, callback):
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setFixedSize(100, 44)
+        # Create a smaller version of the standard button style
+        small_button_style = self.get_button_style(bg_color=COLOR_DARK, text_color="white", hover_color=COLOR_ORANGE)
+        small_button_style = small_button_style.replace("padding: 18px 64px;", "padding: 8px 12px;")
+        small_button_style = small_button_style.replace("font-size: 22px;", "font-size: 14px;")
+        browse_btn.setStyleSheet(small_button_style)
+        browse_btn.clicked.connect(callback)
+        return browse_btn
+        
+    def create_registry_progress_panel(self):
+        panel = QWidget()
+        panel.setStyleSheet("background: white; border-radius: 12px; padding: 20px;")
+        layout = QVBoxLayout(panel)
+        title = QLabel("Progress & Results")
+        title.setFont(QFont("Cascadia Mono", 18, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {COLOR_DARK}; margin-bottom: 20px;")
+        layout.addWidget(title)
+        
+        self.registry_progress_text = QTextEdit()
+        self.registry_progress_text.setReadOnly(True)
+        self.registry_progress_text.setStyleSheet(f"""
+            QTextEdit {{
+                border: 2px solid {COLOR_DARK};
+                border-radius: 8px;
+                padding: 10px;
+                font-family: 'Cascadia Mono';
+                font-size: 12px;
+                background-color: #f8f8f8;
+            }}
+        """)
+        layout.addWidget(self.registry_progress_text)
+        return panel
+
+    def create_acquire_hives_group(self):
+        group = QGroupBox("1. Acquire Registry Hives")
+        group.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        group.setStyleSheet(self._get_group_box_style())
+        
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+        
+        layout.addWidget(QLabel("Username (optional):"))
+        self.username_input = self.create_styled_input("For NTUSER.DAT and UsrClass.dat")
+        layout.addWidget(self.username_input)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Select Hives to Acquire:"))
+        self.hive_list = QListWidget()
+        self.hive_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.hive_list.setMaximumHeight(150)
+        self.hive_list.setStyleSheet(f"border: 1px solid {COLOR_DARK}; border-radius: 5px; padding: 5px;")
+        
+        available_hives = self.registry_analyzer.get_available_hives()
+        for hive in available_hives:
+            self.hive_list.addItem(QListWidgetItem(hive))
+        layout.addWidget(self.hive_list)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Output Directory:"))
+        output_layout = QHBoxLayout()
+        self.acquire_output_dir_input = self.create_styled_input()
+        browse_btn = self._create_small_browse_button(lambda: self.browse_directory(self.acquire_output_dir_input))
+        output_layout.addWidget(self.acquire_output_dir_input)
+        output_layout.addWidget(browse_btn)
+        layout.addLayout(output_layout)
+        
+        layout.addSpacing(15)
+        acquire_btn = self.create_styled_button("Acquire Hives", self.acquire_hives)
+        layout.addWidget(acquire_btn, alignment=Qt.AlignCenter)
+        
+        return group
+
+    def create_analyze_hives_group(self):
+        group = QGroupBox("2. Analyze Registry Hives")
+        group.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        group.setStyleSheet(self._get_group_box_style())
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("Directory of Acquired Hives:"))
+        input_layout = QHBoxLayout()
+        self.analyze_input_dir = self.create_styled_input()
+        browse_input_btn = self._create_small_browse_button(lambda: self.browse_directory(self.analyze_input_dir))
+        input_layout.addWidget(self.analyze_input_dir)
+        input_layout.addWidget(browse_input_btn)
+        layout.addLayout(input_layout)
+
+        populate_btn = QPushButton("List Hives from Directory")
+        small_button_style = self.get_button_style(bg_color=COLOR_DARK, text_color="white", hover_color=COLOR_ORANGE)
+        small_button_style = small_button_style.replace("padding: 18px 64px;", "padding: 8px 12px;").replace("font-size: 22px;", "font-size: 14px;")
+        populate_btn.setStyleSheet(small_button_style)
+        populate_btn.setFixedHeight(44)
+        populate_btn.clicked.connect(self.populate_hives_for_analysis)
+        layout.addWidget(populate_btn, alignment=Qt.AlignLeft)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Select Hives to Analyze:"))
+        self.analyze_hive_list = QListWidget()
+        self.analyze_hive_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.analyze_hive_list.setMaximumHeight(150)
+        self.analyze_hive_list.setStyleSheet(f"border: 1px solid {COLOR_DARK}; border-radius: 5px; padding: 5px;")
+        layout.addWidget(self.analyze_hive_list)
+
+        layout.addSpacing(15)
+        analyze_btn = self.create_styled_button("Analyze Selected Hives", self.analyze_hives)
+        layout.addWidget(analyze_btn, alignment=Qt.AlignCenter)
+        return group
+
+    def create_compare_hives_group(self):
+        group = QGroupBox("3. Compare Registry Hives")
+        group.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        group.setStyleSheet(self._get_group_box_style())
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+        
+        layout.addWidget(QLabel("First Hive:"))
+        hive1_layout = QHBoxLayout()
+        self.hive1_input = self.create_styled_input("Path to first hive file")
+        browse1_btn = self._create_small_browse_button(lambda: self.browse_file(self.hive1_input))
+        hive1_layout.addWidget(self.hive1_input)
+        hive1_layout.addWidget(browse1_btn)
+        layout.addLayout(hive1_layout)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Second Hive:"))
+        hive2_layout = QHBoxLayout()
+        self.hive2_input = self.create_styled_input("Path to second hive file")
+        browse2_btn = self._create_small_browse_button(lambda: self.browse_file(self.hive2_input))
+        hive2_layout.addWidget(self.hive2_input)
+        hive2_layout.addWidget(browse2_btn)
+        layout.addLayout(hive2_layout)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Output Directory for Report:"))
+        output_layout = QHBoxLayout()
+        self.compare_output_dir = self.create_styled_input()
+        browse3_btn = self._create_small_browse_button(lambda: self.browse_directory(self.compare_output_dir))
+        output_layout.addWidget(self.compare_output_dir)
+        output_layout.addWidget(browse3_btn)
+        layout.addLayout(output_layout)
+
+        layout.addSpacing(15)
+        compare_btn = self.create_styled_button("Compare Hives", self.compare_hives)
+        layout.addWidget(compare_btn, alignment=Qt.AlignCenter)
+        
+        return group
+
+    def create_apply_logs_group(self):
+        group = QGroupBox("4. Apply Transaction Logs")
+        group.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        group.setStyleSheet(self._get_group_box_style())
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("Hive File:"))
+        hive_layout = QHBoxLayout()
+        self.logs_hive_input = self.create_styled_input("Path to hive file (e.g., SYSTEM, NTUSER.DAT)")
+        browse1_btn = self._create_small_browse_button(lambda: self.browse_file(self.logs_hive_input))
+        hive_layout.addWidget(self.logs_hive_input)
+        hive_layout.addWidget(browse1_btn)
+        layout.addLayout(hive_layout)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Output Directory for Recovered Hive:"))
+        output_layout = QHBoxLayout()
+        self.logs_output_dir = self.create_styled_input()
+        browse2_btn = self._create_small_browse_button(lambda: self.browse_directory(self.logs_output_dir))
+        output_layout.addWidget(self.logs_output_dir)
+        output_layout.addWidget(browse2_btn)
+        layout.addLayout(output_layout)
+
+        layout.addSpacing(15)
+        apply_btn = self.create_styled_button("Apply Transaction Logs", self.apply_transaction_logs)
+        layout.addWidget(apply_btn, alignment=Qt.AlignCenter)
+        
+        return group
+
+    def create_parse_header_group(self):
+        group = QGroupBox("5. Parse Hive Header")
+        group.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        group.setStyleSheet(self._get_group_box_style())
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+        
+        layout.addWidget(QLabel("Hive File:"))
+        hive_layout = QHBoxLayout()
+        self.header_hive_input = self.create_styled_input("Path to hive file to parse")
+        browse_btn = self._create_small_browse_button(lambda: self.browse_file(self.header_hive_input))
+        hive_layout.addWidget(self.header_hive_input)
+        hive_layout.addWidget(browse_btn)
+        layout.addLayout(hive_layout)
+
+        layout.addSpacing(15)
+        parse_btn = self.create_styled_button("Parse Hive Header", self.parse_hive_header)
+        layout.addWidget(parse_btn, alignment=Qt.AlignCenter)
+        
+        return group
+    
+    def populate_hives_for_analysis(self):
+        """Lists hive files from the selected input directory."""
+        input_dir = self.analyze_input_dir.text()
+        if not os.path.isdir(input_dir):
+            QMessageBox.warning(self, "Invalid Directory", "Please select a valid directory first.")
+            return
+        self.analyze_hive_list.clear()
+        try:
+            for item in os.listdir(input_dir):
+                if os.path.isfile(os.path.join(input_dir, item)):
+                    self.analyze_hive_list.addItem(QListWidgetItem(item))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not read directory: {e}")
+
+    def acquire_hives(self):
+        """Handles the logic for acquiring selected hives."""
+        selected_items = self.hive_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Missing Information", "Please select at least one hive to acquire.")
+            return
+        output_dir = self.acquire_output_dir_input.text()
+        if not output_dir:
+            QMessageBox.warning(self, "Missing Information", "Please specify an output directory.")
+            return
+        selected_hives = [item.text() for item in selected_items]
+        username = self.username_input.text()
+        self.start_registry_operation("acquire_registry_hives", {
+            'output_dir': output_dir,
+            'selected_hives': selected_hives,
+            'username': username
+        })
+
+    def analyze_hives(self):
+        """Handles the logic for analyzing selected hives."""
+        selected_items = self.analyze_hive_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Missing Information", "Please select at least one hive to analyze.")
+            return
+        selected_hives = [item.text() for item in selected_items]
+        analysis_dir = os.path.join(self.selected_case_path, "registry_analysis", "analysis_results")
+        self.start_registry_operation("analyze_registry_hive", {
+            'input_dir': self.analyze_input_dir.text(),
+            'analysis_dir': analysis_dir,
+            'selected_hives': selected_hives
+        })
+
+    def compare_hives(self):
+        """Handles the logic for comparing two hives."""
+        hive1 = self.hive1_input.text()
+        hive2 = self.hive2_input.text()
+        output_dir = self.compare_output_dir.text()
+        if not all([hive1, hive2, output_dir]):
+            QMessageBox.warning(self, "Missing Information", "Please provide paths for both hives and an output directory.")
+            return
+        self.start_registry_operation("compare_registry_hives", {
+            'hive1_path': hive1,
+            'hive2_path': hive2,
+            'output_dir': output_dir
+        })
+
+    def apply_transaction_logs(self):
+        """Handles the logic for applying transaction logs."""
+        hive_path = self.logs_hive_input.text()
+        output_dir = self.logs_output_dir.text()
+        if not all([hive_path, output_dir]):
+            QMessageBox.warning(self, "Missing Information", "Please provide the hive path and an output directory.")
+            return
+        self.start_registry_operation("apply_transaction_logs", {
+            'hive_path': hive_path,
+            'output_dir': output_dir
+        })
+
+    def parse_hive_header(self):
+        """Handles the logic for parsing a hive header."""
+        hive_path = self.header_hive_input.text()
+        if not hive_path:
+            QMessageBox.warning(self, "Missing Information", "Please provide the hive path.")
+            return
+        self.start_registry_operation("parse_hive_header", {'hive_path': hive_path})
+
+    def browse_directory(self, input_field):
+        """Opens a dialog to select a directory and sets the path to the input field."""
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory")
+        if directory:
+            input_field.setText(directory)
+
+    def browse_file(self, input_field):
+        """Opens a dialog to select a file and sets the path to the input field."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Hive File", "", "All Files (*)")
+        if file_path:
+            input_field.setText(file_path)
+
+    def start_registry_operation(self, operation, kwargs):
+        if self.registry_worker_thread and self.registry_worker_thread.isRunning():
+            QMessageBox.warning(self, "In Progress", "Another registry operation is in progress.")
+            return
+        
+        self.registry_progress_text.clear()
+        self.registry_worker_thread = RegistryWorker(self.registry_analyzer, operation, **kwargs)
+        self.registry_worker_thread.progress_updated.connect(self.update_registry_progress)
+        self.registry_worker_thread.operation_completed.connect(self.handle_registry_operation_completed)
+        self.registry_worker_thread.header_output.connect(self.display_header_output)
+        self.registry_worker_thread.start()
+
+    def update_registry_progress(self, message):
+        self.registry_progress_text.append(message)
+
+    def handle_registry_operation_completed(self, operation, success, message):
+        status = "SUCCESS" if success else "FAILED"
+        self.registry_progress_text.append(f"--- [{datetime.now().strftime('%H:%M:%S')}] {operation.replace('_', ' ').title()} {status} ---")
+        if not success:
+             self.registry_progress_text.append(f"Error: {message}\n")
+        else:
+             self.registry_progress_text.append(f"Details: {message}\n")
+        
+        # No popup for every operation, progress text is enough
+        # QMessageBox.information(self, f"Operation {status}", message)
+
+    def display_header_output(self, output):
+        """Display header parsing output in a formatted way"""
+        self.registry_progress_text.append("=" * 60)
+        self.registry_progress_text.append("REGISTRY HIVE HEADER ANALYSIS")
+        self.registry_progress_text.append("=" * 60)
+        self.registry_progress_text.append(output)
+        self.registry_progress_text.append("=" * 60)
+        self.registry_progress_text.append("")  # Add empty line for spacing
 
 if __name__ == '__main__':
     import sys
