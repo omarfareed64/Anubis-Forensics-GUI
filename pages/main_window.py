@@ -5,6 +5,7 @@ from .resource_page import ResourcePage
 from .remote_acquisition_page import RemoteAcquisitionPage
 from .remote_connection_page import RemoteConnectionPage
 from .analysis_page import AnalysisPage
+from .report_page import ReportPage
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -24,6 +25,7 @@ class MainWindow(QMainWindow):
         self.remote_acquisition_page = RemoteAcquisitionPage()
         self.remote_connection_page = RemoteConnectionPage()
         self.analysis_page = AnalysisPage()
+        self.report_page = ReportPage()
 
         self.stacked_widget.addWidget(self.home_page)
         self.stacked_widget.addWidget(self.case_creation_page)
@@ -31,6 +33,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.remote_acquisition_page)
         self.stacked_widget.addWidget(self.remote_connection_page)
         self.stacked_widget.addWidget(self.analysis_page)
+        self.stacked_widget.addWidget(self.report_page)
 
         # Connect signals for page navigation
         self.home_page.create_case_requested.connect(self._show_case_creation_page)
@@ -45,7 +48,7 @@ class MainWindow(QMainWindow):
         self.remote_connection_page.analysis_requested.connect(self._show_analysis_page)
 
         # Centralized tab navigation
-        for page in [self.home_page, self.case_creation_page, self.resource_page, self.remote_acquisition_page, self.remote_connection_page, self.analysis_page]:
+        for page in [self.home_page, self.case_creation_page, self.resource_page, self.remote_acquisition_page, self.remote_connection_page, self.analysis_page, self.report_page]:
             page.tab_selected.connect(self._handle_tab_selected)
 
         # Connect remote acquisition navigation
@@ -134,6 +137,9 @@ class MainWindow(QMainWindow):
             self._show_registry_page()
         elif tab_name == "Analyze Evidence":
             self._show_analysis_page()
+        elif tab_name == "Report":
+            self.stacked_widget.setCurrentWidget(self.report_page)
+            self._select_tab(self.report_page, "Report")
         # Add more tab logic here as needed
 
     def _select_tab(self, page, tab_name):

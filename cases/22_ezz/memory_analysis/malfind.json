@@ -1,0 +1,62 @@
+[
+    {
+        "PID": "5896",
+        "Process": "oneetx.exe",
+        "Start VPN": "0x400000",
+        "End VPN": "0x437fff",
+        "Tag": "VadS",
+        "Protection": "PAGE_EXECUTE_READWRITE",
+        "CommitCharge": "56",
+        "PrivateMemory": "1",
+        "File output": "Disabled",
+        "Notes": "MZ header",
+        "Hexdump": [
+            "4d 5a 90 00 03 00 00 00 04 00 00 00 ff ff 00 00 MZ..............",
+            "b8 00 00 00 00 00 00 00 40 00 00 00 00 00 00 00 ........@.......",
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ................",
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 ................"
+        ],
+        "Disasm": [
+            "0x400000:\tdec\tebp",
+            "0x400001:\tpop\tedx",
+            "0x400002:\tnop\t",
+            "0x400003:\tadd\tbyte ptr [ebx], al",
+            "0x400005:\tadd\tbyte ptr [eax], al",
+            "0x400007:\tadd\tbyte ptr [eax + eax], al",
+            "0x40000a:\tadd\tbyte ptr [eax], al"
+        ]
+    },
+    {
+        "PID": "7540",
+        "Process": "smartscreen.ex",
+        "Start VPN": "0x2505c140000",
+        "End VPN": "0x2505c15ffff",
+        "Tag": "VadS",
+        "Protection": "PAGE_EXECUTE_READWRITE",
+        "CommitCharge": "1",
+        "PrivateMemory": "1",
+        "File output": "Disabled",
+        "Notes": "N/A",
+        "Hexdump": [
+            "48 89 54 24 10 48 89 4c 24 08 4c 89 44 24 18 4c H.T$.H.L$.L.D$.L",
+            "89 4c 24 20 48 8b 41 28 48 8b 48 08 48 8b 51 50 .L$ H.A(H.H.H.QP",
+            "48 83 e2 f8 48 8b ca 48 b8 60 00 14 5c 50 02 00 H...H..H.`..\\P..",
+            "00 48 2b c8 48 81 f9 70 0f 00 00 76 09 48 c7 c1 .H+.H..p...v.H.."
+        ],
+        "Disasm": [
+            "0x2505c140000:\tmov\tqword ptr [rsp + 0x10], rdx",
+            "0x2505c140005:\tmov\tqword ptr [rsp + 8], rcx",
+            "0x2505c14000a:\tmov\tqword ptr [rsp + 0x18], r8",
+            "0x2505c14000f:\tmov\tqword ptr [rsp + 0x20], r9",
+            "0x2505c140014:\tmov\trax, qword ptr [rcx + 0x28]",
+            "0x2505c140018:\tmov\trcx, qword ptr [rax + 8]",
+            "0x2505c14001c:\tmov\trdx, qword ptr [rcx + 0x50]",
+            "0x2505c140020:\tand\trdx, 0xfffffffffffffff8",
+            "0x2505c140024:\tmov\trcx, rdx",
+            "0x2505c140027:\tmovabs\trax, 0x2505c140060",
+            "0x2505c140031:\tsub\trcx, rax",
+            "0x2505c140034:\tcmp\trcx, 0xf70",
+            "0x2505c14003b:\tjbe\t0x2505c140046"
+        ]
+    }
+]
