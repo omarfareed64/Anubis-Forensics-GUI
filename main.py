@@ -7,6 +7,7 @@ def main():
     app = QApplication(sys.argv)
     window = None
 
+
     def show_main():
         nonlocal window
         splash.close()
