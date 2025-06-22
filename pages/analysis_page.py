@@ -10,13 +10,13 @@ import json
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QComboBox, QGroupBox, QGridLayout,
-    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication, QTextEdit,
-    QListWidget, QListWidgetItem, QScrollArea, QTabWidget
+    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication, QTabWidget, QTextEdit,
+    QScrollArea, QListWidget, QListWidgetItem
 )
 from PyQt5.QtGui import QFont, QColor, QKeySequence
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-
+from services.registry_analyzer import RegistryAnalyzer
 # Third-party imports for SRUM
 try:
     import pyesedb
@@ -29,7 +29,6 @@ except ImportError:
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
 from services.web_artifact_extractor import extract_all_web_artifacts
 from services.usb_analyzer import get_usb_devices
-from services.registry_analyzer import RegistryAnalyzer
 from datetime import datetime, timedelta
 
 class WebArtifactThread(QThread):
@@ -59,441 +58,6 @@ class UsbDeviceThread(QThread):
         devices = get_usb_devices()
         self.finished.emit(devices)
 
-class RegistryWorker(QThread):
-    """Worker thread for registry operations"""
-    progress_updated = pyqtSignal(str)
-    operation_completed = pyqtSignal(str, bool, str)
-    header_output = pyqtSignal(str)  # For header parsing output
-    
-    def __init__(self, analyzer, operation, **kwargs):
-        super().__init__()
-        self.analyzer = analyzer
-        self.operation = operation
-        self.kwargs = kwargs
-        
-        # Connect the analyzer's signals to our signals
-        self.analyzer.progress_updated.connect(self.progress_updated.emit)
-        self.analyzer.operation_completed.connect(self.operation_completed.emit)
-        self.analyzer.header_output.connect(self.header_output.emit)
-        
-    def run(self):
-        # This will call the appropriate method on the RegistryAnalyzer instance
-        operation_func = getattr(self.analyzer, self.operation, None)
-        if operation_func:
-            # We need to unpack the kwargs dict to pass them as arguments
-            operation_func(**self.kwargs)
-
-# --- SRUM Analyzer Logic ---
-if SRUM_IMPORTS_AVAILABLE:
-    class SrumAnalyzer:
-        """
-        Encapsulates the logic for SRUM database analysis.
-        This implementation is based on the more comprehensive reference script.
-        """
-
-        def __init__(self, srum_path, template_path, reg_hive_path=None):
-            self.srum_path = srum_path
-            self.template_path = template_path
-            self.reg_hive_path = reg_hive_path
-            self.template_tables = {}
-            self.template_lookups = {}
-            self.id_table = {}
-            self.interface_table = {}
-            self.regsids = {}
-
-        def analyze(self):
-            """Main method to run the analysis."""
-            if self.reg_hive_path:
-                self.interface_table = self._load_interfaces(self.reg_hive_path)
-                self.regsids = self._load_registry_sids(self.reg_hive_path)
-
-            try:
-                ese_db = pyesedb.file()
-                ese_db.open(self.srum_path)
-            except Exception as e:
-                raise IOError(f"Could not open the specified SRUM file: {e}")
-
-            try:
-                template_wb = openpyxl.load_workbook(filename=self.template_path)
-            except Exception as e:
-                ese_db.close()
-                raise IOError(f"Could not open the specified template file: {e}")
-
-            self.template_tables = self._load_template_tables(template_wb)
-            self.template_lookups = self._load_template_lookups(template_wb)
-            if self.regsids:
-                self.template_lookups.setdefault("Known SIDS", {}).update(self.regsids)
-            
-            self.id_table = self._load_srumid_lookups(ese_db)
-
-            skip_tables = ['MSysObjects', 'MSysObjectsShadow', 'MSysObjids', 'MSysLocales', 'SruDbIdMapTable']
-            all_tables_data, message = self._process_srum_tables(ese_db, skip_tables)
-
-            ese_db.close()
-            return all_tables_data, message
-
-        def _process_srum_tables(self, ese_db, skip_tables):
-            all_tables_data = {}
-            for table_num in range(ese_db.number_of_tables):
-                ese_table = ese_db.get_table(table_num)
-                if ese_table.name in skip_tables:
-                    continue
-
-                tname = self._ese_table_guid_to_name(ese_table)
-                num_recs = self._ese_table_record_count(ese_table)
-                if not num_recs:
-                    continue
-
-                table_data = []
-                column_names = [x.name for x in ese_table.columns]
-                
-                header_row = []
-                if ese_table.name in self.template_tables:
-                    _, tfields = self.template_tables.get(ese_table.name)
-                    for eachcol in ese_table.columns:
-                        if eachcol.name in tfields:
-                            _, _, cell_value = tfields.get(eachcol.name)
-                            header_row.append(cell_value)
-                        else:
-                            header_row.append(eachcol.name)
-                else:
-                    header_row = [x.name for x in ese_table.columns]
-                table_data.append(header_row)
-
-                for row_num in range(num_recs):
-                    ese_row = self._ese_table_get_record(ese_table, row_num)
-                    if ese_row is None: continue
-                    
-                    gui_row = []
-                    for col_num in range(ese_table.number_of_columns):
-                        val = self._smart_retrieve(ese_table, row_num, col_num)
-                        if val == "Error": val = f"WARNING: Invalid Column Name {column_names[col_num]}"
-                        elif val is None: val = "None"
-                        elif ese_table.name in self.template_tables:
-                            _, tfields = self.template_tables.get(ese_table.name)
-                            if column_names[col_num] in tfields:
-                                _, cformat, _ = tfields.get(column_names[col_num])
-                                val = self._format_output_for_gui(val, cformat)
-                        gui_row.append(str(val))
-                    table_data.append(gui_row)
-
-                all_tables_data[tname] = table_data
-            return all_tables_data, "Finished processing all tables."
-        
-        def _load_registry_sids(self, reg_file):
-            sids = {}
-            try:
-                reg_handle = Registry.Registry(reg_file)
-                profile_key = reg_handle.open(r"Microsoft\Windows NT\CurrentVersion\ProfileList")
-                for eachsid in profile_key.subkeys():
-                    sids_path = eachsid.value("ProfileImagePath").value()
-                    sids[eachsid.name()] = sids_path.split("\\")[-1]
-            except Exception: return {}
-            return sids
-
-        def _load_interfaces(self, reg_file):
-            profile_lookup = {}
-            try:
-                reg_handle = Registry.Registry(reg_file)
-                int_keys = reg_handle.open('Microsoft\\WlanSvc\\Interfaces')
-                for eachinterface in int_keys.subkeys():
-                    if not hasattr(eachinterface, "subkey") or "Profiles" not in [s.name() for s in eachinterface.subkeys()]: continue
-                    for eachprofile in eachinterface.subkey("Profiles").subkeys():
-                        profileid_val = [x for x in list(eachprofile.values()) if x.name() == "ProfileIndex"]
-                        if not profileid_val: continue
-                        profileid = profileid_val[0].value()
-                        if "MetaData" not in [s.name() for s in eachprofile.subkeys()]: continue
-                        metadata = list(eachprofile.subkey("MetaData").values())
-                        for eachvalue in metadata:
-                            if eachvalue.name() in ["Channel Hints", "Band Channel Hints"]:
-                                channelhintraw, hintlength = eachvalue.value(), struct.unpack("I", eachvalue.value()[0:4])[0]
-                                name = channelhintraw[4:hintlength + 4]
-                                profile_lookup[str(profileid)] = name.decode(encoding="latin1")
-            except Exception: pass
-            return profile_lookup
-
-        def _load_srumid_lookups(self, database):
-            id_lookup = {}
-            try:
-                lookup_table = database.get_table_by_name('SruDbIdMapTable')
-                column_lookup = {x.name: i for i, x in enumerate(lookup_table.columns)}
-            except (IOError, AttributeError): return {}
-            for rec_num in range(self._ese_table_record_count(lookup_table)):
-                blob = self._smart_retrieve(lookup_table, rec_num, column_lookup['IdBlob'])
-                id_type = self._smart_retrieve(lookup_table, rec_num, column_lookup['IdType'])
-                if id_type == 3: blob = self._binary_sid_to_string_sid(blob)
-                elif blob not in ["Empty", "Error"]: blob = self._blob_to_string(blob)
-                id_lookup[self._smart_retrieve(lookup_table, rec_num, column_lookup['IdIndex'])] = blob
-            return id_lookup
-
-        def _load_template_lookups(self, wb):
-            lookups = {}
-            for name in wb.sheetnames:
-                if name.lower().startswith("lookup-"):
-                    lookup_name = name.split("-")[1]
-                    sheet, table = wb[name], {}
-                    for row in sheet.iter_rows(min_row=1, max_col=2, values_only=True):
-                        if row[0] is not None: table[row[0]] = row[1]
-                    lookups[lookup_name] = table
-            return lookups
-
-        def _load_template_tables(self, wb):
-            tables = {}
-            for name in wb.sheetnames:
-                if name.lower().startswith("lookup-"): continue
-                sheet = wb[name]
-                ese_table = sheet.cell(row=1, column=1).value
-                if not ese_table: continue
-                fields = {}
-                for col in range(1, sheet.max_column + 1):
-                    field_name = sheet.cell(row=2, column=col).value
-                    if not field_name: break
-                    fields[field_name] = (
-                        sheet.cell(row=4, column=col).style,
-                        sheet.cell(row=3, column=col).value,
-                        sheet.cell(row=4, column=col).value or field_name
-                    )
-                tables[ese_table] = (name, fields)
-            return tables
-
-        def _smart_retrieve(self, ese_table, ese_record_num, column_number):
-            rec = self._ese_table_get_record(ese_table, ese_record_num)
-            if not rec: return "Error"
-            
-            col_type = rec.get_column_type(column_number)
-            col_data = rec.get_value_data(column_number)
-            
-            if col_data is None: return "Empty"
-
-            try:
-                if col_type == pyesedb.column_types.BINARY_DATA: return codecs.encode(col_data,"HEX").decode()
-                elif col_type == pyesedb.column_types.BOOLEAN: return struct.unpack('?',col_data)[0]
-                elif col_type == pyesedb.column_types.DATE_TIME: return self._ole_timestamp(col_data)
-                elif col_type == pyesedb.column_types.DOUBLE_64BIT: return struct.unpack('d',col_data)[0]
-                elif col_type == pyesedb.column_types.FLOAT_32BIT: return struct.unpack('f',col_data)[0]
-                elif col_type == pyesedb.column_types.GUID: return str(uuid.UUID(bytes=col_data))
-                elif col_type == pyesedb.column_types.INTEGER_16BIT_SIGNED: return struct.unpack('h',col_data)[0]
-                elif col_type == pyesedb.column_types.INTEGER_16BIT_UNSIGNED: return struct.unpack('H',col_data)[0]
-                elif col_type == pyesedb.column_types.INTEGER_32BIT_SIGNED: return struct.unpack('i',col_data)[0]
-                elif col_type == pyesedb.column_types.INTEGER_32BIT_UNSIGNED: return struct.unpack('I',col_data)[0]
-                elif col_type == pyesedb.column_types.INTEGER_64BIT_SIGNED: return struct.unpack('q',col_data)[0]
-                elif col_type == pyesedb.column_types.INTEGER_8BIT_UNSIGNED: return struct.unpack('B',col_data)[0]
-                elif col_type == pyesedb.column_types.LARGE_BINARY_DATA: return codecs.encode(col_data,"HEX").decode()
-                elif col_type == pyesedb.column_types.LARGE_TEXT: return self._blob_to_string(col_data)
-                elif col_type == pyesedb.column_types.SUPER_LARGE_VALUE: return codecs.encode(col_data,"HEX").decode()
-                elif col_type == pyesedb.column_types.TEXT: return self._blob_to_string(col_data)
-            except (struct.error, TypeError):
-                return self._blob_to_string(col_data) # Fallback on error
-            
-            return self._blob_to_string(col_data)
-
-        def _format_output_for_gui(self, val, fmt):
-            if val is None: return "None"
-            if fmt is None: return str(val)
-            
-            fmt_lower = fmt.lower()
-            try:
-                if fmt_lower.startswith("ole"):
-                    if isinstance(val, datetime): val = val.strftime(fmt[4:] if ":" in fmt else '%Y-%m-%d %H:%M:%S')
-                elif fmt_lower.startswith("file"):
-                    ft = self._file_timestamp(val)
-                    if isinstance(ft, datetime): val = ft.strftime(fmt[5:] if ":" in fmt else '%Y-%m-%d %H:%M:%S')
-                    else: val = ft
-                elif fmt_lower.startswith("lookup-"):
-                    lookup_name = fmt.split("-")[1]
-                    val = self.template_lookups.get(lookup_name, {}).get(val, val)
-                elif fmt_lower == "lookup_id": val = self.id_table.get(val, f"Unknown ID ({val})")
-                elif fmt_lower == "lookup_luid":
-                    inttype = struct.unpack(">H6B", codecs.decode(format(val,'016x'),'hex'))[0]
-                    val = self.template_lookups.get("LUID Interfaces",{}).get(inttype,"")
-                elif fmt_lower == "seconds": val = str(timedelta(seconds=val or 0))
-                elif fmt_lower == "md5": val = hashlib.md5(str(val).encode()).hexdigest()
-                elif fmt_lower == "sha1": val = hashlib.sha1(str(val).encode()).hexdigest()
-                elif fmt_lower == "sha256": val = hashlib.sha256(str(val).encode()).hexdigest()
-                elif fmt_lower == "base16": val = hex(val) if isinstance(val, int) else format(val,"08x")
-                elif fmt_lower == "base2": val = format(val,"032b") if isinstance(val, int) else int(str(val),2)
-                elif fmt_lower == "interface_id" and self.reg_hive_path: val = self.interface_table.get(str(val),"")
-            except Exception: pass
-            return str(val)
-
-        def _binary_sid_to_string_sid(self, sid_hex):
-            if not sid_hex: return ""
-            try:
-                sid = codecs.decode(sid_hex, "hex")
-                sid_str = f"S-{sid[0]}"
-                sub_auth_count = sid[1]
-                id_auth = struct.unpack(">Q", b'\x00\x00' + sid[2:8])[0]
-                sid_str += f"-{id_auth}"
-                for i in range(sub_auth_count):
-                    sub_auth = struct.unpack("<L", sid[8 + i*4 : 12 + i*4])[0]
-                    sid_str += f"-{sub_auth}"
-                sid_name = self.template_lookups.get("Known SIDS", {}).get(sid_str, 'unknown')
-                return f"{sid_str} ({sid_name})"
-            except Exception: return "Invalid SID"
-
-        def _blob_to_string(self, blob):
-            try:
-                if isinstance(blob, str): chrblob = codecs.decode(blob, "hex")
-                else: chrblob = blob
-                
-                if re.match(b'^(?:[^\x00]\x00)+\x00\x00$', chrblob): return chrblob.decode("utf-16-le").strip("\x00")
-                elif re.match(b'^(?:\x00[^\x00])+\x00\x00$', chrblob): return chrblob.decode("utf-16-be").strip("\x00")
-                else: return chrblob.decode("latin1").strip("\x00")
-            except Exception:
-                return codecs.encode(blob, 'hex').decode() if isinstance(blob, bytes) else str(blob)
-
-        def _ole_timestamp(self, blob):
-            """Converts a hex encoded OLE time stamp to a time string"""
-            try:
-                td, ts = str(struct.unpack("<d", blob)[0]).split(".")
-                dt = datetime(1899, 12, 30, 0, 0, 0) + timedelta(days=int(td), seconds=86400 * float(f"0.{ts}"))
-                return dt
-            except Exception:
-                return "Invalid OLE Timestamp"
-
-        def _file_timestamp(self, n):
-            try: return datetime(1601, 1, 1) + timedelta(microseconds=n / 10)
-            except Exception: return "Invalid File Timestamp"
-            
-        def _ese_table_guid_to_name(self, table):
-            return self.template_tables.get(table.name, (table.name,))[0]
-            
-        def _ese_table_record_count(self, ese_table):
-            try: return ese_table.number_of_records
-            except Exception: return 0
-
-        def _ese_table_get_record(self, ese_table, row_num):
-            try: return ese_table.get_record(row_num)
-            except Exception: return None
-
-    class SrumAnalysisThread(QThread):
-        """Worker thread for running SRUM analysis."""
-        finished = Signal(dict)
-        def __init__(self, srum_path, template_path, reg_hive_path=None, parent=None):
-            super().__init__(parent)
-            self.srum_path = srum_path
-            self.template_path = template_path
-            self.reg_hive_path = reg_hive_path
-        def run(self):
-            try:
-                analyzer = SrumAnalyzer(self.srum_path, self.template_path, self.reg_hive_path)
-                all_tables, message = analyzer.analyze()
-                self.finished.emit({"status": "success", "data": all_tables, "message": message})
-            except Exception as e:
-                self.finished.emit({"status": "error", "message": str(e)})
-
-class AnalysisPage(BasePage):
-    def __init__(self):
-        super().__init__()
-        self.connection_params = None
-        self.selected_case_path = None
-        self.web_artifact_thread = None
-        self.usb_device_thread = None
-        self.registry_worker_thread = None
-        self.registry_analyzer = RegistryAnalyzer() # Add analyzer instance
-        self.srum_analysis_thread = None
-        self.usb_devices = [] # To store full list of devices
-        self.displayed_usb_devices = [] # To store the currently visible list
-        self._setup_ui()
-
-    def _switch_right_panel_view(self, view_to_show):
-        """Show the selected view and hide others."""
-        self.web_view.setVisible(self.web_view == view_to_show)
-        self.usb_view_container.setVisible(self.usb_view_container == view_to_show)
-import csv
-import os
-<<<<<<< HEAD
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QMessageBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QComboBox, QGroupBox, QGridLayout,
-    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication, QTextEdit,
-    QListWidget, QListWidgetItem, QScrollArea
-=======
-import struct
-import uuid
-import codecs
-import hashlib
-import re
-import time
-import json
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QMessageBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QComboBox, QGroupBox, QGridLayout,
-    QStatusBar, QProgressBar, QFileDialog, QAction, QMenu, QApplication, QTabWidget, QTextEdit
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
-)
-from PyQt5.QtGui import QFont, QColor, QKeySequence
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal, QUrl
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-
-# Third-party imports for SRUM
-try:
-    import pyesedb
-    import openpyxl
-    from Registry import Registry
-    SRUM_IMPORTS_AVAILABLE = True
-except ImportError:
-    SRUM_IMPORTS_AVAILABLE = False
-
-from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
-from services.web_artifact_extractor import extract_all_web_artifacts
-from services.usb_analyzer import get_usb_devices
-from services.registry_analyzer import RegistryAnalyzer
-from datetime import datetime, timedelta
-
-class WebArtifactThread(QThread):
-    """Worker thread for extracting web artifacts."""
-    finished = Signal(dict)
-
-    def __init__(self, params, parent=None):
-        super().__init__(parent)
-        self.params = params
-
-    def run(self):
-        """Execute the extraction script."""
-        result = extract_all_web_artifacts(
-            remote_ip=self.params.get('remote_ip'),
-            domain=self.params.get('remote_domain'),
-            username=self.params.get('remote_user'),
-            password=self.params.get('remote_password')
-        )
-        self.finished.emit(result)
-
-class UsbDeviceThread(QThread):
-    """Worker thread for scanning local USB device history."""
-    finished = Signal(list)
-
-    def run(self):
-        """Execute the USB device scan."""
-        devices = get_usb_devices()
-        self.finished.emit(devices)
-
-<<<<<<< HEAD
-class RegistryWorker(QThread):
-    """Worker thread for registry operations"""
-    progress_updated = pyqtSignal(str)
-    operation_completed = pyqtSignal(str, bool, str)
-    header_output = pyqtSignal(str)  # For header parsing output
-    
-    def __init__(self, analyzer, operation, **kwargs):
-        super().__init__()
-        self.analyzer = analyzer
-        self.operation = operation
-        self.kwargs = kwargs
-        
-        # Connect the analyzer's signals to our signals
-        self.analyzer.progress_updated.connect(self.progress_updated.emit)
-        self.analyzer.operation_completed.connect(self.operation_completed.emit)
-        self.analyzer.header_output.connect(self.header_output.emit)
-        
-    def run(self):
-        # This will call the appropriate method on the RegistryAnalyzer instance
-        operation_func = getattr(self.analyzer, self.operation, None)
-        if operation_func:
-            # We need to unpack the kwargs dict to pass them as arguments
-            success, message = operation_func(**self.kwargs)
-            self.operation_completed.emit(self.operation, success, message)
-=======
 # --- SRUM Analyzer Logic ---
 # Note: This large class is included here to avoid file creation issues.
 # It is recommended to move this to its own file in `services/`.
@@ -651,6 +215,14 @@ if SRUM_IMPORTS_AVAILABLE:
                     lookups[lookup_name] = table
             return lookups
 
+        def set_case_path(self, case_path):
+                self.selected_case_path = case_path
+                if case_path:
+                    base_output = os.path.join(self.selected_case_path, "registry_analysis")
+                    self.acquire_output_dir_input.setText(os.path.join(base_output, "acquired_hives"))
+                    self.analyze_input_dir.setText(os.path.join(base_output, "acquired_hives"))
+                    self.compare_output_dir.setText(os.path.join(base_output, "comparison_results"))
+                    self.logs_output_dir.setText(os.path.join(base_output, "recovered_hives"))
         def _load_template_tables(self, wb):
             tables = {}
             for name in wb.sheetnames:
@@ -800,7 +372,6 @@ if SRUM_IMPORTS_AVAILABLE:
                 self.finished.emit({"status": "success", "data": data, "message": message})
             except Exception as e:
                 self.finished.emit({"status": "error", "message": str(e)})
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
 
 class AnalysisPage(BasePage):
     back_requested = pyqtSignal()
@@ -810,41 +381,43 @@ class AnalysisPage(BasePage):
         self.connection_params = None
         self.web_artifact_thread = None
         self.usb_device_thread = None
-<<<<<<< HEAD
         self.registry_worker_thread = None
-        self.registry_analyzer = RegistryAnalyzer() # Add analyzer instance
-=======
+        self.registry_analyzer = RegistryAnalyzer()
         self.srum_analysis_thread = None
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
         self.usb_devices = [] # To store full list of devices
         self.displayed_usb_devices = [] # To store the currently visible list
-        self.selected_case_path = None
+        self.selected_case_path = None  # Add missing attribute
         self.setup_page_content()
         self._select_tab_programmatically("Analyze Evidence")
+        
+        # Set default font for message boxes
 
     def set_connection_params(self, params):
         """Receive and store connection parameters."""
         self.connection_params = params
 
     def set_case_path(self, case_path):
+        """Set the selected case path and update registry analysis paths."""
         self.selected_case_path = case_path
         if case_path:
             base_output = os.path.join(self.selected_case_path, "registry_analysis")
-            self.acquire_output_dir_input.setText(os.path.join(base_output, "acquired_hives"))
-            self.analyze_input_dir.setText(os.path.join(base_output, "acquired_hives"))
-            self.compare_output_dir.setText(os.path.join(base_output, "comparison_results"))
-            self.logs_output_dir.setText(os.path.join(base_output, "recovered_hives"))
+            # Update registry analysis input/output paths if they exist
+            if hasattr(self, 'acquire_output_dir_input'):
+                self.acquire_output_dir_input.setText(os.path.join(base_output, "acquired_hives"))
+            if hasattr(self, 'analyze_input_dir'):
+                self.analyze_input_dir.setText(os.path.join(base_output, "acquired_hives"))
+            if hasattr(self, 'compare_output_dir'):
+                self.compare_output_dir.setText(os.path.join(base_output, "comparison_results"))
+            if hasattr(self, 'logs_output_dir'):
+                self.logs_output_dir.setText(os.path.join(base_output, "recovered_hives"))
 
     def _switch_right_panel_view(self, view_to_show):
         """Manages visibility of widgets in the right panel."""
         self.web_view.setVisible(self.web_view == view_to_show)
         self.usb_view_container.setVisible(self.usb_view_container == view_to_show)
-<<<<<<< HEAD
         self.registry_view_container.setVisible(self.registry_view_container == view_to_show)
-=======
         self.srum_tab_widget.setVisible(self.srum_tab_widget == view_to_show)
         self.memory_view_container.setVisible(self.memory_view_container == view_to_show)
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
         self.placeholder_label.setVisible(self.placeholder_label == view_to_show)
 
     def setup_page_content(self):
@@ -972,7 +545,6 @@ class AnalysisPage(BasePage):
         self.usb_search_box = QLineEdit()
         self.usb_search_box.setPlaceholderText("Type to filter devices...")
         self.usb_search_box.setClearButtonEnabled(True)
-
         self.usb_search_box.setFont(QFont("Segoe UI", 9))
         self.usb_search_box.textChanged.connect(self.apply_usb_filters)
 
@@ -991,7 +563,7 @@ class AnalysisPage(BasePage):
         self.forensic_button.setFont(QFont("Segoe UI", 9))
         self.forensic_button.clicked.connect(self.perform_forensic_analysis)
 
-        search_label = QLabel("Search")
+        search_label = QLabel("Search:")
         search_label.setFont(QFont("Segoe UI", 9))
         time_label = QLabel("Time Range:")
         time_label.setFont(QFont("Segoe UI", 9))
@@ -1044,17 +616,13 @@ class AnalysisPage(BasePage):
         usb_layout.addWidget(self.usb_status_bar)
 
         right_layout.addWidget(self.usb_view_container)
-
-<<<<<<< HEAD
-        # --- Registry View Container ---
         self.registry_view_container = self.create_registry_view()
         right_layout.addWidget(self.registry_view_container)
-=======
+
         # --- Memory Analysis View Container ---
         self.memory_view_container = QWidget()
         self._setup_memory_analysis_view()
         right_layout.addWidget(self.memory_view_container)
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
 
         # Placeholder label for messages
         self.placeholder_label = QLabel("Select an artifact to view details")
@@ -1551,9 +1119,6 @@ class AnalysisPage(BasePage):
             self.memory_results_view.setHtml(html_content)
 
     def on_artifact_button_click(self, artifact_name):
-<<<<<<< HEAD
-        """Handle clicks on the left-side artifact buttons."""
-=======
         """Handle clicks on the artifact buttons."""
         self._switch_right_panel_view(self.placeholder_label)
         self.placeholder_label.setText(f"Gathering data for {artifact_name}...")
@@ -1562,22 +1127,21 @@ class AnalysisPage(BasePage):
             self._switch_right_panel_view(self.memory_view_container)
             return
 
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
         if artifact_name == "WEB":
             if not self.connection_params:
-                QMessageBox.warning(self, "No Connection", "Please establish a remote connection first.")
+                QMessageBox.warning(self, "Error", "Connection parameters not set for remote artifact extraction.")
+                self.placeholder_label.setText("Select an artifact to view details")
                 return
-            self.web_view.load(QUrl()) # Clear previous content
+            self.web_view.load(QUrl()) # Clear previous contentAdd commentMore actions
             self._switch_right_panel_view(self.web_view)
             self.web_artifact_thread = WebArtifactThread(self.connection_params)
             self.web_artifact_thread.finished.connect(self.on_web_extraction_finished)
             self.web_artifact_thread.start()
+        
         elif artifact_name == "USB":
-            self._switch_right_panel_view(self.usb_view_container)
             self.usb_device_thread = UsbDeviceThread()
             self.usb_device_thread.finished.connect(self.on_usb_scan_finished)
             self.usb_device_thread.start()
-<<<<<<< HEAD
         elif artifact_name == "REGISTRY":
             if not self.selected_case_path:
                 QMessageBox.warning(self, "No Case Selected", "A case must be selected to perform registry analysis.")
@@ -1585,12 +1149,10 @@ class AnalysisPage(BasePage):
             # Update output paths before showing
             self.set_case_path(self.selected_case_path)
             self._switch_right_panel_view(self.registry_view_container)
-=======
 
         elif artifact_name == "SRUM":
             self.start_srum_analysis()
         
->>>>>>> 99e81c0b01190573585baf4d5569a60786b8c6be
         else:
             self.placeholder_label.setText(f"{artifact_name} analysis not implemented yet.")
             self._switch_right_panel_view(self.placeholder_label)
@@ -2025,7 +1587,6 @@ class AnalysisPage(BasePage):
         print(f"Tab clicked: {tab_text}")
         super()._handle_tab_click(clicked_button) 
 
-    # --- REGISTRY ANALYSIS METHODS ---
     def create_registry_view(self):
         """Creates the entire view for Registry Analysis options."""
         container = QFrame()
@@ -2429,6 +1990,31 @@ class AnalysisPage(BasePage):
         self.registry_progress_text.append(output)
         self.registry_progress_text.append("=" * 60)
         self.registry_progress_text.append("")  # Add empty line for spacing
+
+class RegistryWorker(QThread):
+    """Worker thread for registry operations"""
+    progress_updated = pyqtSignal(str)
+    operation_completed = pyqtSignal(str, bool, str)
+    header_output = pyqtSignal(str)  # For header parsing output
+    
+    def __init__(self, analyzer, operation, **kwargs):
+        super().__init__()
+        self.analyzer = analyzer
+        self.operation = operation
+        self.kwargs = kwargs
+        
+        # Connect the analyzer's signals to our signals
+        self.analyzer.progress_updated.connect(self.progress_updated.emit)
+        self.analyzer.operation_completed.connect(self.operation_completed.emit)
+        self.analyzer.header_output.connect(self.header_output.emit)
+        
+    def run(self):
+        # This will call the appropriate method on the RegistryAnalyzer instance
+        operation_func = getattr(self.analyzer, self.operation, None)
+        if operation_func:
+            # We need to unpack the kwargs dict to pass them as arguments
+            success, message = operation_func(**self.kwargs)
+            self.operation_completed.emit(self.operation, success, message)
 
 if __name__ == '__main__':
     import sys

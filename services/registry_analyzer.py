@@ -265,7 +265,7 @@ except Exception as e:
                 try:
                     os.unlink(temp_output_path)
                     os.unlink(script_path)
-                except:
+                except OSError:
                     pass
             
             if result.returncode == 0:

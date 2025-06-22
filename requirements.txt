@@ -22,6 +22,9 @@ regipy==3.1.0
 paramiko==3.3.1
 cryptography==41.0.7
 
+# SRUM Analysis Dependencies
+openpyxl==3.1.2
+
 # Data Handling and Serialization
 dataclasses-json==0.6.3
 pydantic==2.5.2

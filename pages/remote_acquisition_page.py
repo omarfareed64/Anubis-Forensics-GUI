@@ -131,7 +131,7 @@ class RemoteConnectionThread(QThread):
                 subprocess.run(["net", "use", remote_share, "/delete"],
                                stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
-            except:
+            except (subprocess.SubprocessError, FileNotFoundError):
                 pass
 
 # Constants

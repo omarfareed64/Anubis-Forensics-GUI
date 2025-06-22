@@ -75,6 +75,19 @@ class MainWindow(QMainWindow):
             if hasattr(self.remote_acquisition_page, 'set_case_path'):
                 self.remote_acquisition_page.set_case_path(case_path)
 
+    def _show_registry_page(self, case_path=None):
+        # Use the centrally stored path if no path is provided via signal
+        path_to_use = case_path or self.current_case_path
+        
+        if not path_to_use:
+            QMessageBox.warning(self, "No Case Selected", "A case must be selected to perform registry analysis.")
+            return
+
+        self.stacked_widget.setCurrentWidget(self.registry_page)
+        self._select_tab(self.registry_page, "Registry Analysis")
+        if hasattr(self.registry_page, 'set_case_path'):
+             self.registry_page.set_case_path(path_to_use)
+
     def _show_remote_connection_page(self, connection_params):
         """Show remote connection page with connection parameters"""
         self.stacked_widget.setCurrentWidget(self.remote_connection_page)
