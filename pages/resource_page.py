@@ -5,9 +5,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QFont, QIcon
 from PyQt5.QtCore import Qt, pyqtSignal, QSize
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
-import datetime
 import os
-import json
+from services.evidence_store import record_evidence
 
 # Constants
 FONT_CARD = QFont("Cascadia Mono", 24, QFont.Weight.Bold)
@@ -98,17 +97,12 @@ class ResourcePage(BasePage):
                 background-color: white;
                 border: 2.5px solid {COLOR_DARK};
                 border-radius: 18px;
-                transition: all 0.2s ease;
-            }}
+}}
             QPushButton:hover {{
                 background-color: #f8f8f8;
                 border-color: {COLOR_ORANGE};
-                transform: translateY(-3px);
-                box-shadow: 0 8px 16px rgba(0,0,0,0.15);
             }}
             QPushButton:pressed {{
-                transform: translateY(-1px);
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
             }}
         """)
         # Set icon
@@ -127,7 +121,6 @@ class ResourcePage(BasePage):
 
     def _handle_remote_acquisition_click(self):
         """Handle remote acquisition card click"""
-        print("Remote Acquisition clicked")
         self.remote_acquisition_requested.emit()
 
     def _handle_local_image_click(self):
@@ -146,27 +139,9 @@ class ResourcePage(BasePage):
         
         if files:
             try:
-                # Create evidence subfolder in the case directory
-                evidence_dir = os.path.join(self.selected_case_path, "evidence")
-                os.makedirs(evidence_dir, exist_ok=True)
-                
-                # Save evidence info
-                evidence_info = {
-                    "files": files,
-                    "timestamp": str(datetime.datetime.now()),
-                    "type": "local_image"
-                }
-                
-                evidence_file = os.path.join(evidence_dir, f"evidence_{len(os.listdir(evidence_dir)) + 1}.json")
-                with open(evidence_file, "w", encoding="utf-8") as f:
-                    json.dump(evidence_info, f, indent=2)
-                
-                QMessageBox.information(
-                    self, 
-                    "Success", 
-                    f"Evidence files added to case successfully!\nSaved to: {evidence_dir}"
-                )
-                
+                # Disk images can be very large, so they are referenced in place (path + size) rather than copied.
+                descriptor = record_evidence(self.selected_case_path, files, "local_image", source="local files", compute_hashes=False)
+                QMessageBox.information(self, "Success", f"{len(files)} evidence file(s) added to the case.\nDescriptor: {descriptor}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save evidence: {e}")
 

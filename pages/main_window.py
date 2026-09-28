@@ -1,17 +1,23 @@
-from PyQt5.QtWidgets import QMainWindow, QStackedWidget
+from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
+
 from .home_page import HomePage, COLOR_GRAY
 from .case_creation_page import CaseCreationPage
 from .resource_page import ResourcePage
 from .remote_acquisition_page import RemoteAcquisitionPage
 from .remote_connection_page import RemoteConnectionPage
 from .analysis_page import AnalysisPage
+from .report_page import ReportPage
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Anubis Forensics")
         self.resize(1800, 1200)
+        self.setMinimumSize(900, 640)
         self.setStyleSheet(f"background-color: {COLOR_GRAY}; font-family: 'Cascadia Mono';")
+
+        self.current_case_path = None  # Single source of truth for the selected case
 
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
@@ -22,96 +28,87 @@ class MainWindow(QMainWindow):
         self.remote_acquisition_page = RemoteAcquisitionPage()
         self.remote_connection_page = RemoteConnectionPage()
         self.analysis_page = AnalysisPage()
+        self.report_page = ReportPage()
 
-        self.stacked_widget.addWidget(self.home_page)
-        self.stacked_widget.addWidget(self.case_creation_page)
-        self.stacked_widget.addWidget(self.resource_page)
-        self.stacked_widget.addWidget(self.remote_acquisition_page)
-        self.stacked_widget.addWidget(self.remote_connection_page)
-        self.stacked_widget.addWidget(self.analysis_page)
+        self.pages = [self.home_page, self.case_creation_page, self.resource_page, self.remote_acquisition_page,
+                      self.remote_connection_page, self.analysis_page, self.report_page]
+        for page in self.pages:
+            self.stacked_widget.addWidget(page)
+            page.tab_selected.connect(self._handle_tab_selected)
 
-        # Connect signals for page navigation
+        # Page-specific navigation signals
         self.home_page.create_case_requested.connect(self._show_case_creation_page)
         self.home_page.add_evidence_requested.connect(self._show_resource_page_for_evidence)
         self.case_creation_page.back_requested.connect(self._show_home_page)
+        self.case_creation_page.case_created.connect(self._on_case_created)
         self.case_creation_page.resource_requested.connect(self._show_resource_page)
         self.resource_page.back_requested.connect(self._show_home_page)
+        self.resource_page.remote_acquisition_requested.connect(self._show_remote_acquisition_page)
         self.remote_acquisition_page.back_requested.connect(self._show_resource_page)
         self.remote_acquisition_page.connect_requested.connect(self._show_remote_connection_page)
         self.remote_connection_page.back_requested.connect(self._show_remote_acquisition_page)
         self.remote_connection_page.analysis_requested.connect(self._show_analysis_page)
 
-        # Centralized tab navigation
-        for page in [self.home_page, self.case_creation_page, self.resource_page, self.remote_acquisition_page, self.remote_connection_page, self.analysis_page]:
-            page.tab_selected.connect(self._handle_tab_selected)
+    # ------------------------------------------------------------- helpers
+    def set_case(self, case_path):
+        """Propagate the selected case to every page that stores results."""
+        self.current_case_path = case_path
+        for page in (self.resource_page, self.remote_acquisition_page, self.remote_connection_page, self.analysis_page, self.report_page):
+            page.set_case_path(case_path)
 
-        # Connect remote acquisition navigation
-        self.resource_page.remote_acquisition_requested.connect(self._show_remote_acquisition_page)
+    def _show(self, page, tab_name):
+        self.stacked_widget.setCurrentWidget(page)
+        page._select_tab_programmatically(tab_name)
+
+    # ---------------------------------------------------------- navigation
+    def _show_home_page(self):
+        self._show(self.home_page, "Case Info")
 
     def _show_case_creation_page(self):
-        self.stacked_widget.setCurrentWidget(self.case_creation_page)
-        self._select_tab(self.case_creation_page, "Case Info")
+        self._show(self.case_creation_page, "Case Info")
 
-    def _show_home_page(self):
-        self.stacked_widget.setCurrentWidget(self.home_page)
-        self._select_tab(self.home_page, "Case Info")
+    def _on_case_created(self, case_path):
+        self.set_case(case_path)
+        self._show_resource_page()
 
     def _show_resource_page(self):
-        self.stacked_widget.setCurrentWidget(self.resource_page)
-        self._select_tab(self.resource_page, "Resource")
-
-    def _show_remote_acquisition_page(self):
-        self.stacked_widget.setCurrentWidget(self.remote_acquisition_page)
-        self._select_tab(self.remote_acquisition_page, "Resource")
-        # Pass the case path from resource page to acquisition page
-        if hasattr(self.resource_page, 'selected_case_path'):
-            case_path = self.resource_page.selected_case_path
-            if hasattr(self.remote_acquisition_page, 'set_case_path'):
-                self.remote_acquisition_page.set_case_path(case_path)
-
-    def _show_remote_connection_page(self, connection_params):
-        """Show remote connection page with connection parameters"""
-        self.stacked_widget.setCurrentWidget(self.remote_connection_page)
-        self._select_tab(self.remote_connection_page, "Resource")
-        # Pass connection parameters to the remote connection page
-        self.remote_connection_page.set_connection_params(connection_params)
-        # Pass case path as well
-        if hasattr(self.remote_acquisition_page, 'selected_case_path'):
-            case_path = self.remote_acquisition_page.selected_case_path
-            if hasattr(self.remote_connection_page, 'set_case_path'):
-                self.remote_connection_page.set_case_path(case_path)
-
-    def _show_analysis_page(self):
-        self.stacked_widget.setCurrentWidget(self.analysis_page)
-        self._select_tab(self.analysis_page, "Analyze Evidence")
-        # Pass connection parameters to the analysis page
-        if hasattr(self.remote_connection_page, 'connection_params'):
-            params = self.remote_connection_page.connection_params
-            if hasattr(self.analysis_page, 'set_connection_params'):
-                self.analysis_page.set_connection_params(params)
+        self._show(self.resource_page, "Resource")
 
     def _show_resource_page_for_evidence(self, case_path):
-        """Show resource page for adding evidence to a specific case"""
-        self.stacked_widget.setCurrentWidget(self.resource_page)
-        self._select_tab(self.resource_page, "Resource")
-        # Pass the case path to the resource page
-        if hasattr(self.resource_page, 'set_case_path'):
-            self.resource_page.set_case_path(case_path)
+        self.set_case(case_path)
+        self._show_resource_page()
+
+    def _show_remote_acquisition_page(self):
+        if not self.current_case_path:
+            QMessageBox.warning(self, "No Case Selected", "Select or create a case first so acquired evidence can be stored in it.")
+            return
+        self._show(self.remote_acquisition_page, "Resource")
+
+    def _show_remote_connection_page(self, connection_params):
+        self._show(self.remote_connection_page, "Resource")
+        self.remote_connection_page.set_connection_params(connection_params)
+        self.analysis_page.set_connection_params(connection_params)
+
+    def _show_analysis_page(self):
+        self._show(self.analysis_page, "Analyze Evidence")
+        if self.current_case_path:
+            self.analysis_page.set_case_path(self.current_case_path)
+        if self.remote_connection_page.connection_params:
+            self.analysis_page.set_connection_params(self.remote_connection_page.connection_params)
+
+    def _show_report_page(self):
+        self._show(self.report_page, "Report")
+        self.report_page.set_case_path(self.current_case_path)
 
     def _handle_tab_selected(self, tab_name):
         if tab_name == "Case Info":
             self._show_home_page()
         elif tab_name == "Resource":
-            # Check which page is currently active to determine navigation
-            current_widget = self.stacked_widget.currentWidget()
-            if current_widget == self.remote_acquisition_page:
-                self._show_remote_connection_page()
+            if self.current_case_path:
+                self._show_resource_page_for_evidence(self.current_case_path)
             else:
                 self._show_resource_page()
         elif tab_name == "Analyze Evidence":
             self._show_analysis_page()
-        # Add more tab logic here as needed
-
-    def _select_tab(self, page, tab_name):
-        if hasattr(page, "tab_buttons"):
-            page._select_tab_programmatically(tab_name)
+        elif tab_name == "Report":
+            self._show_report_page()

@@ -1,45 +1,21 @@
-# Core GUI Framework
-PyQt5==5.15.9
-PyQt5-Qt5==5.15.2
-PyQt5-sip==12.12.2
-PyQtWebEngine==5.15.6
+# Anubis Forensics GUI - runtime dependencies
+# Install with:  python -m pip install -r requirements.txt   (Python 3.10+ , tested on 3.14)
 
-# Web UI Integration
-pywebview==4.4.1
+# GUI
+PyQt5>=5.15.11
+PyQtWebEngine>=5.15.7
+pywebview>=5.0          # native window for the remote file browser
 
-# Backend Integration
-aiohttp==3.9.1
-requests==2.31.0
-urllib3==2.1.0
+# Forensic parsing
+regipy>=6.0             # registry hives (analysis, diff, transaction logs, header)
+dissect.esedb>=3.10     # SRUM database (pure Python ESE parser)
+volatility3>=2.26       # memory analysis
+openpyxl>=3.1
 
-# Data & Parsing
-certifi==2023.11.17
+# Reports / networking
+mistune>=3.0            # Markdown -> HTML for the report page
+requests>=2.31          # VirusTotal and LLM API calls
 
-# Security and Encryption
-paramiko==3.3.1
-cryptography==41.0.7
-
-# Data Handling and Serialization
-dataclasses-json==0.6.3
-pydantic==2.5.2
-
-# Async Support
-asyncio-mqtt==0.16.1
-
-# Development and Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-qt==4.2.0
-pytest-cov==4.1.0
-
-# Code Quality
-black==23.12.1
-flake8==6.1.0
-mypy==1.8.0
-
-# Documentation
-sphinx==7.2.6
-sphinx-rtd-theme==2.0.0
-
-# Optional: Build and Deployment
-pyinstaller==6.3.0 
+# Optional extras:
+#   pip install regipy[full]   -> shellbag plugins (needs compiled libfwsi bindings)
+#   pip install yara-python capstone -> extra Volatility plugins (yarascan, better malfind disassembly)

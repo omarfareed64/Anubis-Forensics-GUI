@@ -2,6 +2,8 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
 from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtCore import Qt
 
+from utils.paths import asset
+
 # Constants
 FONT_TITLE = QFont("Cascadia Mono", 36, QFont.Weight.Bold)
 FONT_SUBTITLE = QFont("Josefin Sans", 16, QFont.Weight.DemiBold)
@@ -19,7 +21,7 @@ class SplashScreen(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         logo = QLabel(self)
-        pixmap = QPixmap("assets/4x/logoAsset 21@4x.png")
+        pixmap = QPixmap(asset("logoAsset 21@4x.png"))
         if not pixmap.isNull():
             scaled = pixmap.scaled(1500, 1500, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             logo.setPixmap(scaled)

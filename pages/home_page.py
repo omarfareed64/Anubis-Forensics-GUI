@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
 import os
 import json
+from utils.paths import CASES_DIR
 
 # Constants
 FONT_CARD = QFont("Cascadia Mono", 24, QFont.Weight.Bold)
@@ -68,18 +69,13 @@ class HomePage(BasePage):
                 border: 2px solid {COLOR_DARK};
                 border-radius: 16px;
                 color: {COLOR_DARK};
-                transition: all 0.2s ease;
-            }}
+}}
             QPushButton:hover {{
                 background-color: #f8f8f8;
                 border-color: {COLOR_ORANGE};
                 color: {COLOR_ORANGE};
-                transform: translateY(-2px);
-                box-shadow: 0 6px 12px rgba(0,0,0,0.15);
             }}
             QPushButton:pressed {{
-                transform: translateY(0px);
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }}
         """)
         plus_button.clicked.connect(callback)
@@ -87,11 +83,10 @@ class HomePage(BasePage):
         return layout
 
     def handle_create_case(self):
-        print("Create New Case clicked")
         self.create_case_requested.emit()
 
     def handle_add_evidence(self):
-        cases_dir = os.path.join(os.getcwd(), "cases")
+        cases_dir = CASES_DIR
         cases = []
         if os.path.exists(cases_dir):
             for folder in os.listdir(cases_dir):
@@ -227,7 +222,7 @@ class HomePage(BasePage):
         dialog.exec_()
 
     def _handle_browse_cases_click(self):
-        cases_dir = os.path.join(os.getcwd(), "cases")
+        cases_dir = CASES_DIR
         cases = []
         if os.path.exists(cases_dir):
             for folder in os.listdir(cases_dir):

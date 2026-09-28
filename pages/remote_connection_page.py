@@ -1,41 +1,173 @@
+"""Remote connection page: acquire artifacts, files and memory from the connected host."""
+import glob
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QGroupBox, QFrame, QSizePolicy, QHeaderView, QMessageBox, QProgressDialog, QDialog,
-    QListWidget, QListWidgetItem, QAbstractItemView, QFileDialog
+    QSizePolicy, QHeaderView, QMessageBox, QProgressDialog, QDialog, QListWidget, QListWidgetItem,
+    QAbstractItemView, QFileDialog
 )
-from PyQt5.QtGui import QFont, QPixmap, QColor, QIcon
-from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread, pyqtSignal as Signal, QTimer
-from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
-import os
-import sys
-import subprocess
-import time
-import logging
-import threading
-from datetime import datetime
-import uuid
-import json
+from PyQt5.QtGui import QFont, QPixmap
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal
 
-# Try to import webview, show warning if not available
-try:
-    import webview
-    WEBVIEW_AVAILABLE = True
-except ImportError:
-    WEBVIEW_AVAILABLE = False
-    print("Warning: pywebview not installed. Install with: pip install pywebview")
+from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, TAB_NAMES
+from services.evidence_store import record_evidence, list_evidence, human_size
+from utils.paths import (NO_WINDOW, PSEXEC_EXE, WINPMEM_EXE, PROCDUMP_EXE, RAWCOPY_EXE, PROJECT_ROOT, asset,
+                         case_subdir, CASE_EVIDENCE_SUBDIR)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler("filebrowser.log"),
-        logging.StreamHandler()
-    ]
-)
+logger = logging.getLogger(__name__)
+
+FONT_CARD = QFont("Cascadia Mono", 16, QFont.Weight.Bold)
+FONT_TABLE_HEADER = QFont("Cascadia Mono", 13, QFont.Weight.Bold)
+FONT_TABLE = QFont("Cascadia Mono", 12)
+FONT_BTN = QFont("Cascadia Mono", 16, QFont.Weight.Bold)
+FONT_SIDEBAR_LABEL = QFont("Cascadia Mono", 12, QFont.Weight.Bold)
+
+# Artifacts offered by the "Targeted locations" dialog. ``locked`` items are copied
+# with RawCopy through PsExec because the OS keeps them open.
+TARGETED_ARTIFACTS = [
+    {"desc": "All users - Desktop", "path": r"C:\Users\*\Desktop\*", "locked": False},
+    {"desc": "All users - Documents", "path": r"C:\Users\*\Documents\*", "locked": False},
+    {"desc": "All users - Downloads", "path": r"C:\Users\*\Downloads\*", "locked": False},
+    {"desc": "Browser profiles (Edge/Chrome)", "path": r"C:\Users\*\AppData\Local\{Microsoft\Edge,Google\Chrome}\User Data\Default\{History,Bookmarks,Login Data,Network\Cookies}", "locked": False},
+    {"desc": "User registry hives (NTUSER.DAT)", "path": r"C:\Users\*\NTUSER.DAT", "locked": True},
+    {"desc": "System registry hives", "path": r"C:\Windows\System32\config\{SAM,SYSTEM,SOFTWARE,SECURITY}", "locked": True},
+    {"desc": "SRUM database", "path": r"C:\Windows\System32\sru\SRUDB.dat", "locked": True},
+    {"desc": "Amcache", "path": r"C:\Windows\appcompat\Programs\Amcache.hve", "locked": True},
+    {"desc": "Windows Event Logs (Security, System, Application)", "path": r"C:\Windows\System32\winevt\Logs\{Security,System,Application}.evtx", "locked": True},
+    {"desc": "Prefetch files", "path": r"C:\Windows\Prefetch\*.pf", "locked": False},
+    {"desc": "Scheduled tasks", "path": r"C:\Windows\System32\Tasks\*", "locked": False},
+]
+
+
+def expand_braces(pattern: str) -> list[str]:
+    """Expand {a,b} alternatives in a path pattern."""
+    start = pattern.find("{")
+    if start == -1:
+        return [pattern]
+    end = pattern.find("}", start)
+    if end == -1:
+        return [pattern]
+    results = []
+    for option in pattern[start + 1:end].split(","):
+        results.extend(expand_braces(pattern[:start] + option + pattern[end + 1:]))
+    return results
+
+
+def psexec_base(params: dict) -> list[str]:
+    return [PSEXEC_EXE, f"\\\\{params['remote_ip']}", "-accepteula", "-u", f"{params['remote_domain']}\\{params['remote_user']}",
+            "-p", params["remote_password"], "-h"]
+
+
+def run_quiet(command, check=True, timeout=None, **kwargs):
+    return subprocess.run(command, check=check, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          creationflags=NO_WINDOW, timeout=timeout, **kwargs)
+
+
+class TargetedAcquisitionThread(QThread):
+    """Copy selected artifact groups from the remote host into the case folder."""
+    progress_update = Signal(str)
+    acquisition_complete = Signal(list, list)  # copied files, errors
+    acquisition_failed = Signal(str)
+
+    def __init__(self, params, artifacts, destination, parent=None):
+        super().__init__(parent)
+        self.params, self.artifacts, self.destination = params, artifacts, destination
+
+    def run(self):
+        ip = self.params["remote_ip"]
+        share = f"\\\\{ip}\\C$"
+        copied, errors = [], []
+        try:
+            self.progress_update.emit("Connecting to the administrative share ...")
+            run_quiet(["net", "use", share, self.params["remote_password"], f"/user:{self.params['remote_domain']}\\{self.params['remote_user']}"], timeout=60)
+        except subprocess.CalledProcessError as error:
+            self.acquisition_failed.emit(f"Could not connect to {share}: {(error.stderr or error.stdout or '').strip()}")
+            return
+        try:
+            for artifact in self.artifacts:
+                if artifact["locked"]:
+                    self._acquire_locked(artifact, share, copied, errors)
+                else:
+                    self._acquire_plain(artifact, share, copied, errors)
+        finally:
+            run_quiet(["net", "use", share, "/delete", "/y"], check=False)
+        self.acquisition_complete.emit(copied, errors)
+
+    def _target_dir(self, artifact):
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in artifact["desc"]).strip().replace(" ", "_")
+        return os.path.join(self.destination, safe)
+
+    def _acquire_plain(self, artifact, share, copied, errors):
+        target_root = self._target_dir(artifact)
+        for pattern in expand_braces(artifact["path"]):
+            unc_pattern = share + pattern[2:]  # replace "C:" by \\ip\C$
+            matches = glob.glob(unc_pattern, recursive=False)
+            self.progress_update.emit(f"{artifact['desc']}: {len(matches)} item(s) for {pattern}")
+            for source in matches:
+                relative = source[len(share) + 1:]
+                destination = os.path.join(target_root, relative)
+                try:
+                    if os.path.isdir(source):
+                        shutil.copytree(source, destination, dirs_exist_ok=True)
+                        for root, _dirs, files in os.walk(destination):
+                            copied.extend(os.path.join(root, f) for f in files)
+                    else:
+                        os.makedirs(os.path.dirname(destination), exist_ok=True)
+                        shutil.copy2(source, destination)
+                        copied.append(destination)
+                except OSError as error:
+                    errors.append(f"{source}: {error}")
+
+    def _acquire_locked(self, artifact, share, copied, errors):
+        if not os.path.isfile(RAWCOPY_EXE):
+            errors.append("RawCopy.exe missing in the application folder")
+            return
+        target_root = self._target_dir(artifact)
+        os.makedirs(target_root, exist_ok=True)
+        remote_tmp = f"C:\\Windows\\Temp\\anubis_{uuid.uuid4().hex[:8]}"
+        remote_tmp_unc = share + remote_tmp[2:]
+        try:
+            os.makedirs(remote_tmp_unc, exist_ok=True)
+            shutil.copy2(RAWCOPY_EXE, os.path.join(remote_tmp_unc, "RawCopy.exe"))
+        except OSError as error:
+            errors.append(f"Could not stage RawCopy on the remote host: {error}")
+            return
+        for pattern in expand_braces(artifact["path"]):
+            unc_pattern = share + pattern[2:]
+            matches = glob.glob(unc_pattern) if any(ch in pattern for ch in "*?") else [unc_pattern]
+            for source in matches:
+                remote_path = "C:" + source[len(share):]
+                self.progress_update.emit(f"RawCopy {remote_path} ...")
+                try:
+                    run_quiet([*psexec_base(self.params), f"{remote_tmp}\\RawCopy.exe", f"/FileNamePath:{remote_path}",
+                               f"/OutputPath:{remote_tmp}"], check=False, timeout=600)
+                    staged = os.path.join(remote_tmp_unc, os.path.basename(remote_path))
+                    if not os.path.isfile(staged):
+                        errors.append(f"{remote_path}: RawCopy produced no output (file may not exist)")
+                        continue
+                    relative = remote_path[3:]
+                    destination = os.path.join(target_root, relative)
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    shutil.move(staged, destination)
+                    copied.append(destination)
+                except (OSError, subprocess.SubprocessError) as error:
+                    errors.append(f"{remote_path}: {error}")
+        try:
+            run_quiet([*psexec_base(self.params), "cmd", "/c", f"rmdir /S /Q {remote_tmp}"], check=False, timeout=120)
+        except subprocess.SubprocessError:
+            pass
+
 
 class WebBrowserThread(QThread):
-    """This thread runs the external file browser and waits for it to close."""
+    """Runs the external file browser helper and waits for it to close."""
     browser_closed = Signal()
 
     def __init__(self, command, parent=None):
@@ -44,200 +176,118 @@ class WebBrowserThread(QThread):
 
     def run(self):
         try:
-            # Popen is non-blocking, but wait() will block this thread until the process finishes.
-            process = subprocess.Popen(self.command, creationflags=subprocess.CREATE_NO_WINDOW)
+            process = subprocess.Popen(self.command, creationflags=NO_WINDOW)
             process.wait()
-        except Exception as e:
-            logging.error(f"Failed to run file browser process: {e}")
+        except Exception as error:  # noqa: BLE001
+            logger.error("Failed to run file browser process: %s", error)
         finally:
             self.browser_closed.emit()
 
-class CleanupThread(QThread):
-    """This thread handles the remote cleanup process in the background."""
-    cleanup_finished = Signal(dict)
-    
-    def __init__(self, connection_params):
-        super().__init__()
-        self.connection_params = connection_params
-        
+
+class PingThread(QThread):
+    result = Signal(bool)
+
+    def __init__(self, ip, parent=None):
+        super().__init__(parent)
+        self.ip = ip
+
     def run(self):
-        remote_ip = self.connection_params.get('remote_ip')
-        remote_domain = self.connection_params.get('remote_domain')
-        remote_user = self.connection_params.get('remote_user')
-        remote_password = self.connection_params.get('remote_password')
-
-        if not all([remote_ip, remote_domain, remote_user, remote_password]):
-            self.cleanup_finished.emit({'status': 'error', 'message': 'Invalid connection parameters for cleanup.'})
-            return
-
         try:
-            logging.info("[*] Cleaning up remote filebrowser and db...")
-            remote_path = "C:\\filebrowser.exe"
-            remote_db_path = "C:\\WINDOWS\\system32\\filebrowser.db"
-            
-            cleanup_command = [
-                "PsExec.exe", f"\\\\{remote_ip}", "-accepteula",
-                "-u", f"{remote_domain}\\{remote_user}", "-p", remote_password, "-h",
-                "cmd", "/c",
-                f"taskkill /F /IM filebrowser.exe & del /F /Q {remote_path} & del /F /Q {remote_db_path}"
-            ]
-            
-            subprocess.run(cleanup_command, check=True, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            logging.info("[*] Remote cleanup complete.")
-            self.cleanup_finished.emit({'status': 'success', 'message': 'Remote session cleaned up successfully.'})
+            completed = run_quiet(["ping", "-n", "1", "-w", "2000", self.ip], check=False, timeout=10)
+            self.result.emit(completed.returncode == 0)
+        except subprocess.SubprocessError:
+            self.result.emit(False)
 
-        except subprocess.CalledProcessError as e:
-            error_message = f"Remote cleanup failed with exit code {e.returncode}.\nStdout: {e.stdout}\nStderr: {e.stderr}"
-            logging.error(error_message)
-            self.cleanup_finished.emit({'status': 'error', 'message': error_message})
-        except FileNotFoundError:
-            logging.error("Cleanup failed: PsExec.exe not found in system PATH.")
-            self.cleanup_finished.emit({'status': 'error', 'message': 'Cleanup failed: PsExec.exe not found in your system PATH.'})
-        except Exception as e:
-            logging.error(f"An unexpected error occurred during cleanup: {e}")
-            self.cleanup_finished.emit({'status': 'error', 'message': f'An unexpected error occurred during cleanup: {e}'})
-        finally:
-            remote_share = f"\\\\{remote_ip}\\C$"
-            subprocess.run(["net", "use", remote_share, "/delete"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-
-FONT_TAB = QFont("Cascadia Mono", 16, QFont.Weight.Bold)
-FONT_CARD = QFont("Cascadia Mono", 16, QFont.Weight.Bold)
-FONT_TABLE_HEADER = QFont("Cascadia Mono", 14, QFont.Weight.Bold)
-FONT_TABLE = QFont("Cascadia Mono", 13)
-FONT_BTN = QFont("Cascadia Mono", 18, QFont.Weight.Bold)
-FONT_SIDEBAR_LABEL = QFont("Cascadia Mono", 12, QFont.Weight.Bold)
-FONT_SIDEBAR_VALUE = QFont("Cascadia Mono", 11)
 
 class RemoteConnectionPage(BasePage):
     back_requested = pyqtSignal()
     analysis_requested = pyqtSignal()
-    
+
     def __init__(self):
         super().__init__()
         self.connection_params = None
-        self.cleanup_thread = None
         self.browser_thread = None
-        self.webview_window = None  # To hold a reference to the window
-        self.selected_case_path = None  # Store selected case path
+        self.acquisition_thread = None
+        self.ping_thread = None
+        self.progress_dialog = None
+        self.selected_case_path = None
         self.setup_page_content()
 
     def set_connection_params(self, params):
-        """Set connection parameters from remote acquisition page"""
-        print(f"DEBUG: Setting connection params: {params}")
-        logging.info(f"DEBUG: Setting connection params: {params}")
         self.connection_params = params
-        if hasattr(self, 'sidebar'):
-            self._update_sidebar_info()
+        self._update_sidebar_info()
 
     def set_case_path(self, case_path):
         self.selected_case_path = case_path
+        self._reload_evidence_table()
 
+    # ---------------------------------------------------------------- layout
     def setup_page_content(self):
         self.main_layout.setSpacing(0)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Add tab bar
         self.main_layout.addLayout(self._setup_tab_bar(TAB_NAMES))
         self.main_layout.addSpacing(20)
 
-        # Main horizontal layout
         main_hbox = QHBoxLayout()
         main_hbox.setSpacing(30)
         main_hbox.setContentsMargins(40, 0, 40, 0)
-
-        # Sidebar
         self.sidebar = self._sidebar()
         main_hbox.addWidget(self.sidebar)
 
-        # Center content (cards + table)
         center_content = QWidget()
         center_vbox = QVBoxLayout(center_content)
-        center_vbox.setSpacing(24)
+        center_vbox.setSpacing(20)
         center_vbox.setContentsMargins(0, 0, 0, 0)
 
-        # Cards row
         cards_hbox = QHBoxLayout()
         cards_hbox.setSpacing(60)
-        cards_hbox.addWidget(self._card('TARGETED\n LOCATIONS', 'assets/4x/targeted locationsAsset 24@4x.png'))
-        cards_hbox.addWidget(self._card('FILES &\n FOLDERS', 'assets/4x/file_foldersAsset 25@4x.png'))
-        cards_hbox.addWidget(self._card('MEMORY', 'assets/4x/memoryAsset 26@4x.png'))
+        cards_hbox.addWidget(self._card("TARGETED\nLOCATIONS", asset("targeted locationsAsset 24@4x.png"), self._handle_targeted_locations_click))
+        cards_hbox.addWidget(self._card("FILES &\nFOLDERS", asset("file_foldersAsset 25@4x.png"), self._handle_files_folders_click))
+        cards_hbox.addWidget(self._card("MEMORY", asset("memoryAsset 26@4x.png"), self._handle_memory_click))
         center_vbox.addLayout(cards_hbox)
-        center_vbox.addSpacing(18)
 
-        # Table
         self.evidence_table = self._evidence_table()
-        center_vbox.addWidget(self.evidence_table)
-        center_vbox.addSpacing(24)
+        center_vbox.addWidget(self.evidence_table, 1)
 
-        # Analyze button
-        analyze_btn = self.create_styled_button("ANALYZE EVIDENCES")
-        analyze_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        center_vbox.addWidget(analyze_btn, alignment=Qt.AlignCenter)
-        analyze_btn.clicked.connect(self.analysis_requested.emit)
-
-        # Back button (bottom left)
+        buttons = QHBoxLayout()
         back_btn = self.create_styled_button("Back", self._handle_back_click, COLOR_DARK, "white")
-        center_vbox.addWidget(back_btn, alignment=Qt.AlignLeft)
+        buttons.addWidget(back_btn, alignment=Qt.AlignLeft)
+        buttons.addStretch()
+        analyze_btn = self.create_styled_button("ANALYZE EVIDENCES", self.analysis_requested.emit)
+        analyze_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        buttons.addWidget(analyze_btn, alignment=Qt.AlignRight)
+        center_vbox.addLayout(buttons)
 
         main_hbox.addWidget(center_content, stretch=1)
-        self.main_layout.addLayout(main_hbox)
-        self.main_layout.addStretch()
+        self.main_layout.addLayout(main_hbox, 1)
+        self.main_layout.addSpacing(20)
 
     def _sidebar(self):
         sidebar = QWidget()
-        sidebar.setFixedWidth(260)
+        sidebar.setFixedWidth(280)
         vbox = QVBoxLayout(sidebar)
         vbox.setContentsMargins(16, 24, 16, 24)
         vbox.setSpacing(10)
-        
-        # Icon
         icon = QLabel()
-        pix = QPixmap('assets/4x/lap_iconAsset 22@4x.png')
+        pix = QPixmap(asset("lap_iconAsset 22@4x.png"))
         if not pix.isNull():
-            icon.setPixmap(pix.scaled(400,400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            icon.setPixmap(pix.scaled(220, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         icon.setAlignment(Qt.AlignCenter)
         vbox.addWidget(icon)
-        
-        # Info labels (will be updated when connection params are set)
         self.info_labels = {}
-        info_fields = [
-            ("Computer name:", "Not connected"),
-            ("Username:", "Not connected"),
-            ("End point IP:", "Not connected"),
-            ("Computer State:", "Disconnected")
-        ]
-        
-        for label, value in info_fields:
+        for label in ("Computer name:", "Username:", "End point IP:", "Computer State:"):
             row = QLabel()
-            if label == "Computer State:":
-                row.setText(f'<b>{label}</b> <span style="color:#d32f2f;">{value}</span> <span style="color:#d32f2f; font-size:18px;">●</span>')
-            else:
-                row.setText(f'<b>{label}</b> <span style="color:#23292f;">{value}</span>')
             row.setFont(FONT_SIDEBAR_LABEL)
+            row.setWordWrap(True)
             vbox.addWidget(row)
             self.info_labels[label] = row
-        
-        # Refresh button
+        self._update_sidebar_info()
         refresh = QPushButton("Refresh")
         refresh.setFont(FONT_SIDEBAR_LABEL)
-        refresh.setFixedWidth(100)
+        refresh.setFixedWidth(110)
         refresh.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLOR_DARK};
-                color: white;
-                border-radius: 8px;
-                padding: 6px 0;
-                border: none;
-                transition: all 0.2s ease;
-            }}
-            QPushButton:hover {{
-                background-color: {COLOR_ORANGE};
-                transform: translateY(-1px);
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-            }}
-            QPushButton:pressed {{
-                transform: translateY(0px);
-            }}
+            QPushButton {{ background-color: {COLOR_DARK}; color: white; border-radius: 8px; padding: 6px 0; border: none; }}
+            QPushButton:hover {{ background-color: {COLOR_ORANGE}; }}
         """)
         refresh.clicked.connect(self._handle_refresh_click)
         vbox.addWidget(refresh, alignment=Qt.AlignLeft)
@@ -245,287 +295,213 @@ class RemoteConnectionPage(BasePage):
         sidebar.setStyleSheet("background: white; border-radius: 18px;")
         return sidebar
 
-    def _update_sidebar_info(self):
-        """Update sidebar with connection information"""
-        if not self.connection_params:
-            return
-            
-        # Update info labels
-        self.info_labels["Computer name:"].setText(
-            f'<b>Computer name:</b> <span style="color:#23292f;">{self.connection_params.get("remote_ip", "Unknown")}</span>'
-        )
-        self.info_labels["Username:"].setText(
-            f'<b>Username:</b> <span style="color:#23292f;">{self.connection_params.get("remote_user", "Unknown")}</span>'
-        )
-        self.info_labels["End point IP:"].setText(
-            f'<b>End point IP:</b> <span style="color:#23292f;">{self.connection_params.get("remote_ip", "Unknown")}</span>'
-        )
-        self.info_labels["Computer State:"].setText(
-            f'<b>Computer State:</b> <span style="color:#2e7d32;">Connected</span> <span style="color:#2e7d32; font-size:18px;">●</span>'
-        )
+    def _update_sidebar_info(self, state=None):
+        params = self.connection_params or {}
+        connected = bool(params) if state is None else state
+        color = "#2e7d32" if connected else "#d32f2f"
+        text = "Connected" if connected else ("Unreachable" if params else "Disconnected")
+        self.info_labels["Computer name:"].setText(f'<b>Computer name:</b> {params.get("computer_name", params.get("remote_ip", "Not connected"))}')
+        self.info_labels["Username:"].setText(f'<b>Username:</b> {params.get("remote_domain", "")}\\{params.get("remote_user", "")}' if params else "<b>Username:</b> Not connected")
+        self.info_labels["End point IP:"].setText(f'<b>End point IP:</b> {params.get("remote_ip", "Not connected")}')
+        self.info_labels["Computer State:"].setText(f'<b>Computer State:</b> <span style="color:{color};">{text} ●</span>')
 
-    def _card(self, title, icon_path):
+    def _card(self, title, icon_path, callback):
         card = QPushButton()
-        card.setStyleSheet(f"""
-            QPushButton {{
-                border: 2px solid black;
-                border-radius: 10px;
-                background: white;
-                transition: border-color 0.2s;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: #f5f5f5;
-            }}
-            QPushButton:pressed {{
-                background-color: #e0e0e0;
-                transform: translateY(1px);
-            }}
+        card.setStyleSheet("""
+            QPushButton { border: 2px solid black; border-radius: 10px; background: white; padding: 0px; }
+            QPushButton:hover { background-color: #f5f5f5; }
+            QPushButton:pressed { background-color: #e0e0e0; }
         """)
-        card.setFixedSize(280, 220)
+        card.setFixedSize(280, 200)
         card.setCursor(Qt.PointingHandCursor)
-        
-        # Create layout for the button content
-        v = QVBoxLayout(card)
-        v.setAlignment(Qt.AlignCenter)
-        v.setContentsMargins(0, 0, 0, 0)  # Remove margins to avoid gray background
-        
+        layout = QVBoxLayout(card)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(0, 0, 0, 0)
         icon = QLabel()
         pix = QPixmap(icon_path)
         if not pix.isNull():
-            icon.setPixmap(pix.scaled(400,400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        else:
-            icon.setText("[icon]")
+            icon.setPixmap(pix.scaled(110, 110, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet("background: transparent;")  # Ensure no background
-        v.addWidget(icon)
-        
+        icon.setStyleSheet("background: transparent;")
+        layout.addWidget(icon)
         title_label = QLabel(title)
         title_label.setFont(FONT_CARD)
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("background: transparent;")  # Ensure no background
-        v.addWidget(title_label)
-        
-        # Connect click handler based on card type
-        if "TARGETED" in title:
-            card.clicked.connect(self._handle_targeted_locations_click)
-        elif "FILES" in title:
-            card.clicked.connect(self._handle_files_folders_click)
-        elif "MEMORY" in title:
-            card.clicked.connect(self._handle_memory_click)
-        
+        title_label.setStyleSheet("background: transparent;")
+        layout.addWidget(title_label)
+        card.clicked.connect(callback)
         return card
 
-    def _handle_targeted_locations_click(self):
-        """Handle targeted locations card click"""
-        print("Targeted Locations card clicked")
-        dialog = TargetedLocationsDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            selected_artifacts = dialog.get_selected_artifacts()
-
-            def add_artifacts_after_delay():
-                for artifact in selected_artifacts:
-                    # Add to evidence table with a placeholder size
-                    self.add_evidence_row(artifact['desc'], "Pending")
-            
-            # Use QTimer.singleShot to add a 3-second delay
-            QTimer.singleShot(3000, add_artifacts_after_delay)
-        
-    def _handle_files_folders_click(self):
-        """Handle files & folders card click."""
-        if not self.connection_params:
-            QMessageBox.warning(self, "No Connection", "Please establish a remote connection first.")
-            return
-
-        if self.browser_thread and self.browser_thread.isRunning():
-            QMessageBox.information(self, "In Progress", "File browser is already running.")
-            return
-
-        try:
-            python_executable = sys.executable
-            script_path = os.path.join(os.path.dirname(__file__), '..', 'utils', 'file_browser_launcher.py')
-
-            if not os.path.exists(script_path):
-                raise FileNotFoundError(f"Helper script not found at {script_path}")
-
-            params = self.connection_params
-            command = [
-                python_executable, script_path,
-                params['remote_ip'], params['remote_domain'],
-                params['remote_user'], params['remote_password']
-            ]
-            
-            # Run the browser in a separate thread to avoid freezing the GUI
-            self.browser_thread = WebBrowserThread(command)
-            self.browser_thread.browser_closed.connect(self._on_browser_closed)
-            self.browser_thread.start()
-            
-            QMessageBox.information(self, "Browser Launched", "The remote file browser has been launched in a separate window. Evidence will be added after you close it.")
-
-        except Exception as e:
-            logging.error(f"Failed to launch file browser script: {e}", exc_info=True)
-            QMessageBox.critical(self, "Launch Error", f"Failed to launch file browser: {e}")
-
-    def _on_browser_closed(self):
-        """Called when the file browser window is closed."""
-        # Wait 3 seconds then add the item to the table.
-        QTimer.singleShot(3000, lambda: self.add_evidence_row("he.txt", "40 bytes"))
-
-    def _handle_memory_click(self):
-        """Handle memory card click"""
-        if not self.connection_params:
-            QMessageBox.warning(self, "No Connection", "Please establish a remote connection first.")
-            return
-        dialog = MemoryOptionsDialog(self)
-        dialog.exec_()
-
     def _evidence_table(self):
-        table = QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["Item", "STARTED AT DATE/TIME", "SIZE", ""])
-        
-        # Sizing
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(["Item", "Type", "Acquired at", "Size", ""])
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        table.setColumnWidth(4, 130)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setShowGrid(False)
-        table.setFocusPolicy(Qt.NoFocus)
-        table.setSelectionMode(QTableWidget.NoSelection)
-        
+        table.setSelectionBehavior(QTableWidget.SelectRows)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setFont(FONT_TABLE_HEADER)
         table.setFont(FONT_TABLE)
-
         table.setStyleSheet(f"""
-            QTableWidget {{
-                background-color: white;
-                border: 1px solid {COLOR_DARK};
-                border-radius: 8px;
-                gridline-color: transparent;
-            }}
-            QHeaderView::section {{
-                background-color: {COLOR_DARK};
-                color: white;
-                padding: 15px 10px;
-                border: none;
-                border-bottom: 1px solid {COLOR_DARK}; 
-                border-right: 1px solid #4A535C;
-            }}
-            QHeaderView::section:last {{
-                border-right: none;
-            }}
-            QTableWidget::item {{
-                padding-left: 10px;
-                border-bottom: 1px solid #333;
-            }}
+            QTableWidget {{ background-color: white; border: 1px solid {COLOR_DARK}; border-radius: 8px; gridline-color: transparent; }}
+            QHeaderView::section {{ background-color: {COLOR_DARK}; color: white; padding: 12px 10px; border: none; border-right: 1px solid #4A535C; }}
+            QTableWidget::item {{ padding-left: 10px; border-bottom: 1px solid #ddd; }}
         """)
-        
-        # Initialize with 5 empty rows to set the base size
-        self._initialize_empty_table_rows(table)
-
-        # Calculate and set a fixed height for the table to show exactly 5 rows.
-        # A scrollbar will appear automatically if more than 5 rows are added.
-        header_height = table.horizontalHeader().height()
-        total_rows_height = 5 * 60  # 5 rows * 60px per row
-        border_height = table.frameWidth() * 2  # Account for top/bottom border
-        
-        table.setFixedHeight(header_height + total_rows_height + border_height)
-
+        table.setMinimumHeight(260)
         return table
-    
-    def _initialize_empty_table_rows(self, table):
-        """Helper to populate table on init for styling purposes."""
-        table.setRowCount(5)
-        for row in range(5):
-            table.setRowHeight(row, 60)
-            # Ensure the last column has a bottom border like the others
-            item = QTableWidgetItem()
-            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            table.setItem(row, 3, item)
 
-    def _handle_refresh_click(self):
-        """Handle refresh button click"""
-        print("Refresh clicked")
-        # TODO: Implement refresh functionality
+    def _reload_evidence_table(self):
+        self.evidence_table.setRowCount(0)
+        if not self.selected_case_path:
+            return
+        for descriptor in list_evidence(self.selected_case_path):
+            for item in descriptor.get("files", []):
+                self.add_evidence_row(item.get("name", ""), human_size(item.get("size")), descriptor.get("type", ""),
+                                      descriptor.get("timestamp", ""), item.get("path"))
 
-    def _handle_delete_click(self, table, row):
-        """Handle delete button click"""
-        item_name_widget = table.item(row, 0)
-        if not item_name_widget or not item_name_widget.text():
-            return # Row is already empty
-
-        item_name = item_name_widget.text()
-        reply = QMessageBox.question(
-            self, 
-            "Confirm Delete", 
-            f"Are you sure you want to delete '{item_name}'?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            # Clear the row's content instead of removing it
-            for col in range(table.columnCount()):
-                table.setItem(row, col, QTableWidgetItem(""))
-            table.removeCellWidget(row, 3)
-            print(f"Deleted: {item_name}")
-
-    def _handle_back_click(self):
-        """Handle back button click."""
-        # The cleanup is handled by the external script, so we can just go back.
-        # A more robust solution might check if the process is running, but this is fine.
-        self.back_requested.emit()
-
-    def add_evidence_row(self, file_name, size_str):
+    def add_evidence_row(self, file_name, size_str, evidence_type="", timestamp=None, path=None):
         table = self.evidence_table
-        # Find first empty row
-        for row in range(table.rowCount()):
-            if not table.item(row, 0) or not table.item(row, 0).text():
-                break
-        else:
-            # If no empty row, add a new one
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setRowHeight(row, 60)
-        item_widget = QTableWidgetItem(file_name)
-        date_widget = QTableWidgetItem(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        size_widget = QTableWidgetItem(size_str)
-        item_widget.setTextAlignment(Qt.AlignVCenter)
-        date_widget.setTextAlignment(Qt.AlignVCenter)
-        size_widget.setTextAlignment(Qt.AlignVCenter)
-        table.setItem(row, 0, item_widget)
-        table.setItem(row, 1, date_widget)
-        table.setItem(row, 2, size_widget)
-        delete_btn = QPushButton("DELETE")
-        delete_btn.setFont(QFont("Cascadia Mono", 9, QFont.Weight.Bold))
-        delete_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLOR_DARK};
-                color: white;
-                border-radius: 5px;
-                padding: 5px 25px;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #3C454E;
-            }}
-        """)
-        delete_btn.clicked.connect(lambda: self._handle_delete_click(table, row))
-        cell_widget = QWidget()
-        layout = QHBoxLayout(cell_widget)
-        layout.addWidget(delete_btn)
+        row = table.rowCount()
+        table.insertRow(row)
+        table.setRowHeight(row, 44)
+        timestamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for col, value in enumerate((file_name, evidence_type, timestamp.replace("T", " "), size_str)):
+            item = QTableWidgetItem(str(value))
+            item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            if col == 0 and path:
+                item.setToolTip(path)
+            table.setItem(row, col, item)
+        open_btn = QPushButton("OPEN")
+        open_btn.setFont(QFont("Cascadia Mono", 9, QFont.Weight.Bold))
+        open_btn.setStyleSheet(f"QPushButton {{ background-color: {COLOR_DARK}; color: white; border-radius: 5px; padding: 5px 18px; border: none; }} QPushButton:hover {{ background-color: {COLOR_ORANGE}; }}")
+        open_btn.clicked.connect(lambda _c, p=path: self._open_evidence(p))
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.addWidget(open_btn)
         layout.setAlignment(Qt.AlignRight)
         layout.setContentsMargins(0, 0, 10, 0)
-        table.setCellWidget(row, 3, cell_widget)
+        table.setCellWidget(row, 4, cell)
+
+    @staticmethod
+    def _open_evidence(path):
+        if path and os.path.exists(path):
+            os.startfile(os.path.dirname(path) if os.path.isfile(path) else path)
+
+    # ------------------------------------------------------------- actions
+    def _require_connection(self) -> bool:
+        if not self.connection_params:
+            QMessageBox.warning(self, "No Connection", "Please establish a remote connection first.")
+            return False
+        return True
+
+    def _require_case(self) -> bool:
+        if not self.selected_case_path:
+            QMessageBox.warning(self, "No Case", "Select or create a case first so evidence can be stored in it.")
+            return False
+        return True
+
+    def _show_progress(self, title, label):
+        self.progress_dialog = QProgressDialog(label, None, 0, 0, self)
+        self.progress_dialog.setWindowTitle(title)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumWidth(520)
+        self.progress_dialog.show()
+
+    def _handle_targeted_locations_click(self):
+        if not self._require_connection() or not self._require_case():
+            return
+        dialog = TargetedLocationsDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        selected = dialog.get_selected_artifacts()
+        destination = os.path.join(case_subdir(self.selected_case_path, CASE_EVIDENCE_SUBDIR), f"targeted_{datetime.now():%Y%m%d_%H%M%S}")
+        self._show_progress("Targeted acquisition", "Starting acquisition ...")
+        self.acquisition_thread = TargetedAcquisitionThread(self.connection_params, selected, destination)
+        self.acquisition_thread.progress_update.connect(self.progress_dialog.setLabelText)
+        self.acquisition_thread.acquisition_complete.connect(lambda files, errors: self._on_targeted_complete(files, errors, destination))
+        self.acquisition_thread.acquisition_failed.connect(self._on_acquisition_failed)
+        self.acquisition_thread.start()
+
+    def _on_targeted_complete(self, files, errors, destination):
+        self.progress_dialog.close()
+        if files:
+            record_evidence(self.selected_case_path, files, "targeted_locations",
+                            source=self.connection_params.get("remote_ip", ""), notes="; ".join(errors[:20]), compute_hashes=len(files) <= 200)
+            self._reload_evidence_table()
+        message = f"Copied {len(files)} file(s) to\n{destination}"
+        if errors:
+            message += f"\n\n{len(errors)} item(s) could not be copied:\n" + "\n".join(errors[:8])
+        (QMessageBox.warning if errors and not files else QMessageBox.information)(self, "Targeted acquisition", message)
+
+    def _on_acquisition_failed(self, error_message):
+        if self.progress_dialog:
+            self.progress_dialog.close()
+        QMessageBox.critical(self, "Acquisition Failed", error_message)
+
+    def _handle_files_folders_click(self):
+        if not self._require_connection() or not self._require_case():
+            return
+        if self.browser_thread and self.browser_thread.isRunning():
+            QMessageBox.information(self, "In Progress", "File browser is already running.")
+            return
+        script_path = os.path.join(PROJECT_ROOT, "utils", "file_browser_launcher.py")
+        params = self.connection_params
+        command = [sys.executable, script_path, params["remote_ip"], params["remote_domain"], params["remote_user"], params["remote_password"]]
+        self.browser_thread = WebBrowserThread(command)
+        self.browser_thread.browser_closed.connect(self._on_browser_closed)
+        self.browser_thread.start()
+        QMessageBox.information(self, "Browser Launched",
+                                "The remote file browser opens in a separate window. Download the files you need, then close it: "
+                                "you will be asked which downloaded files to add to the case.")
+
+    def _on_browser_closed(self):
+        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        files, _ = QFileDialog.getOpenFileNames(self, "Select downloaded files to add as evidence", downloads, "All files (*)")
+        if not files:
+            return
+        destination = os.path.join(case_subdir(self.selected_case_path, CASE_EVIDENCE_SUBDIR), f"files_{datetime.now():%Y%m%d_%H%M%S}")
+        os.makedirs(destination, exist_ok=True)
+        stored = []
+        for source in files:
+            target = os.path.join(destination, os.path.basename(source))
+            try:
+                shutil.copy2(source, target)
+                stored.append(target)
+            except OSError as error:
+                QMessageBox.warning(self, "Copy failed", f"{source}: {error}")
+        if stored:
+            record_evidence(self.selected_case_path, stored, "remote_files", source=self.connection_params.get("remote_ip", ""))
+            self._reload_evidence_table()
+
+    def _handle_memory_click(self):
+        if not self._require_connection() or not self._require_case():
+            return
+        MemoryOptionsDialog(self).exec_()
+
+    def _handle_refresh_click(self):
+        if not self.connection_params:
+            return
+        self.ping_thread = PingThread(self.connection_params["remote_ip"])
+        self.ping_thread.result.connect(lambda ok: self._update_sidebar_info(ok))
+        self.ping_thread.start()
+        self._reload_evidence_table()
+
+    def _handle_back_click(self):
+        self.back_requested.emit()
+
 
 class TargetedLocationsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Targeted Locations Acquisition")
         self.setModal(True)
-        self.setFixedSize(800, 500)
+        self.resize(900, 520)
         self.selected_artifacts = []
         self.setup_ui()
 
@@ -533,191 +509,127 @@ class TargetedLocationsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
-
         title = QLabel("Select items to acquire from the target machine")
         title.setFont(QFont("Cascadia Mono", 14, QFont.Weight.Bold))
         layout.addWidget(title)
-        
-        # Artifacts Table
+        hint = QLabel("Locked system files (registry hives, SRUM, event logs) are copied with RawCopy through PsExec; everything else through the C$ share.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Description", "Example Path"])
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Description", "Path pattern", "Method"])
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
-        self.populate_artifacts()
+        self.table.setRowCount(len(TARGETED_ARTIFACTS))
+        for i, artifact in enumerate(TARGETED_ARTIFACTS):
+            item_desc = QTableWidgetItem(artifact["desc"])
+            item_desc.setFlags(item_desc.flags() | Qt.ItemIsUserCheckable)
+            item_desc.setCheckState(Qt.Unchecked)
+            self.table.setItem(i, 0, item_desc)
+            self.table.setItem(i, 1, QTableWidgetItem(artifact["path"]))
+            self.table.setItem(i, 2, QTableWidgetItem("RawCopy (locked)" if artifact["locked"] else "Share copy"))
+        self.table.resizeRowsToContents()
         layout.addWidget(self.table)
 
-        # Buttons
         button_layout = QHBoxLayout()
-        dump_button = QPushButton("Dump")
+        dump_button = QPushButton("Acquire")
         dump_button.setFont(FONT_BTN)
         dump_button.setCursor(Qt.PointingHandCursor)
-        dump_button.setStyleSheet(f"""
-            QPushButton {{ background-color: {COLOR_ORANGE}; color: white; border-radius: 8px; padding: 10px 40px; border: none; }}
-            QPushButton:hover {{ background-color: #E6840D; }}
-        """)
+        dump_button.setStyleSheet(f"QPushButton {{ background-color: {COLOR_ORANGE}; color: white; border-radius: 8px; padding: 10px 40px; border: none; }} QPushButton:hover {{ background-color: #E6840D; }}")
         dump_button.clicked.connect(self.on_dump)
-        
         close_button = QPushButton("Close")
         close_button.setFont(FONT_BTN)
         close_button.setCursor(Qt.PointingHandCursor)
-        close_button.setStyleSheet(f"""
-            QPushButton {{ background-color: {COLOR_DARK}; color: white; border-radius: 8px; padding: 10px 40px; border: none; }}
-            QPushButton:hover {{ background-color: #3C454E; }}
-        """)
+        close_button.setStyleSheet(f"QPushButton {{ background-color: {COLOR_DARK}; color: white; border-radius: 8px; padding: 10px 40px; border: none; }} QPushButton:hover {{ background-color: #3C454E; }}")
         close_button.clicked.connect(self.reject)
-
         button_layout.addStretch()
         button_layout.addWidget(dump_button)
         button_layout.addWidget(close_button)
         layout.addLayout(button_layout)
 
-    def populate_artifacts(self):
-        artifacts = [
-            {"desc": "All users - Desktop", "path": "C:\\Users\\*\\Desktop\\*.*"},
-            {"desc": "All users - Documents", "path": "C:\\Users\\*\\Documents\\*.*"},
-            {"desc": "All users - Downloads", "path": "C:\\Users\\*\\Downloads\\*.*"},
-            {"desc": "Web Browsing Activity (Chrome)", "path": "C:\\Users\\*\\AppData\\Local\\Google\\Chrome\\User Data\\Default"},
-            {"desc": "User Registry Hive", "path": "C:\\Users\\*\\NTUSER.dat"},
-            {"desc": "System Registry Hives", "path": "C:\\Windows\\System32\\config\\(SAM|SYSTEM|SOFTWARE|SECURITY)"},
-            {"desc": "Windows Event Logs", "path": "C:\\Windows\\System32\\winevt\\Logs\\*.evtx"},
-            {"desc": "Pagefile", "path": "C:\\pagefile.sys"},
-            {"desc": "Prefetch Files", "path": "C:\\Windows\\Prefetch\\*.pf"},
-        ]
-        
-        self.table.setRowCount(len(artifacts))
-        for i, artifact in enumerate(artifacts):
-            # Checkbox + Description
-            item_desc = QTableWidgetItem(artifact["desc"])
-            item_desc.setFlags(item_desc.flags() | Qt.ItemIsUserCheckable)
-            item_desc.setCheckState(Qt.Unchecked)
-            self.table.setItem(i, 0, item_desc)
-            
-            # Example Path
-            item_path = QTableWidgetItem(artifact["path"])
-            self.table.setItem(i, 1, item_path)
-            
-        self.table.resizeRowsToContents()
-
     def on_dump(self):
-        self.selected_artifacts.clear()
-        for i in range(self.table.rowCount()):
-            item = self.table.item(i, 0)
-            if item.checkState() == Qt.Checked:
-                self.selected_artifacts.append({
-                    "desc": item.text(),
-                    "path": self.table.item(i, 1).text()
-                })
+        self.selected_artifacts = [TARGETED_ARTIFACTS[i] for i in range(self.table.rowCount()) if self.table.item(i, 0).checkState() == Qt.Checked]
         if not self.selected_artifacts:
-            QMessageBox.warning(self, "No Selection", "Please select at least one item to dump.")
+            QMessageBox.warning(self, "No Selection", "Please select at least one item to acquire.")
             return
         self.accept()
 
     def get_selected_artifacts(self):
         return self.selected_artifacts
 
+
 class MemoryOptionsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setModal(True)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setWindowTitle("Memory Remote Acquisition")
         self.thread = None
         self.progress_dialog = None
         self.setup_ui()
 
     def setup_ui(self):
-        self.setFixedSize(600, 320)
+        self.setFixedSize(600, 300)
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 20)
         main_layout.setSpacing(0)
-
-        header = QWidget()
-        header.setFixedHeight(50)
-        header.setStyleSheet(f"background-color: {COLOR_DARK};")
-
-        title_label = QLabel("Memory Remote Acquisition Options")
-        title_label.setFont(QFont("Cascadia Mono", 16, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setContentsMargins(0, 25, 0, 25)
+        header = QLabel("Memory Remote Acquisition Options")
+        header.setFont(QFont("Cascadia Mono", 16, QFont.Weight.Bold))
+        header.setAlignment(Qt.AlignCenter)
+        header.setStyleSheet(f"background-color: {COLOR_DARK}; color: white; padding: 16px;")
+        main_layout.addWidget(header)
+        main_layout.addSpacing(24)
 
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(20)
         buttons_layout.setAlignment(Qt.AlignCenter)
-
-        full_dump_btn = QPushButton("Full memory dump")
-        specific_dump_btn = QPushButton("Dump specific\nprocesses")
-        
+        full_dump_btn = QPushButton("Full memory dump\n(winpmem)")
+        specific_dump_btn = QPushButton("Dump specific\nprocesses (procdump)")
         full_dump_btn.clicked.connect(self.full_memory_dump)
         specific_dump_btn.clicked.connect(self.dump_specific_processes)
-
         btn_style = f"""
-            QPushButton {{
-                background-color: {COLOR_DARK};
-                color: white;
-                border-radius: 8px;
-                padding: 15px 25px;
-                font-family: 'Cascadia Mono';
-                font-size: 14px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #3C454E;
-            }}
+            QPushButton {{ background-color: {COLOR_DARK}; color: white; border-radius: 8px; padding: 15px 25px;
+                           font-family: 'Cascadia Mono'; font-size: 14px; font-weight: bold; }}
+            QPushButton:hover {{ background-color: #3C454E; }}
         """
         full_dump_btn.setStyleSheet(btn_style)
         specific_dump_btn.setStyleSheet(btn_style)
-
         buttons_layout.addWidget(full_dump_btn)
         buttons_layout.addWidget(specific_dump_btn)
-
-        close_btn = QPushButton("Close")
-        close_btn.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLOR_ORANGE};
-                color: white;
-                border-radius: 8px;
-                padding: 10px 40px;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #E6840D;
-            }}
-        """)
-        close_btn.clicked.connect(self.accept)
-
-        main_layout.addWidget(header)
-        main_layout.addWidget(title_label)
         main_layout.addLayout(buttons_layout)
         main_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setFont(QFont("Cascadia Mono", 12, QFont.Weight.Bold))
+        close_btn.setStyleSheet(f"QPushButton {{ background-color: {COLOR_ORANGE}; color: white; border-radius: 8px; padding: 10px 40px; border: none; }} QPushButton:hover {{ background-color: #E6840D; }}")
+        close_btn.clicked.connect(self.accept)
         main_layout.addWidget(close_btn, alignment=Qt.AlignCenter)
-
         self.setStyleSheet(f"background-color: white; border: 1px solid {COLOR_DARK};")
-    
+
     def _show_progress_dialog(self, title, label):
-        self.progress_dialog = QProgressDialog(label, "Cancel", 0, 0, self)
+        self.progress_dialog = QProgressDialog(label, None, 0, 0, self)
         self.progress_dialog.setWindowTitle(title)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumWidth(480)
         self.progress_dialog.show()
+
+    def _evidence_dir(self):
+        return case_subdir(self.parent().selected_case_path, CASE_EVIDENCE_SUBDIR)
 
     def full_memory_dump(self):
         self._show_progress_dialog("Full Memory Dump", "Starting full memory dump...")
-        params = self.parent().connection_params
-        self.thread = MemoryAcquisitionThread('full_dump', params)
+        self.thread = MemoryAcquisitionThread("full_dump", self.parent().connection_params, output_dir=self._evidence_dir())
         self.thread.progress_update.connect(self.progress_dialog.setLabelText)
-        self.thread.acquisition_complete.connect(self.on_acquisition_complete)
+        self.thread.acquisition_complete.connect(lambda files: self.on_acquisition_complete(files, "remote_full_memory_dump"))
         self.thread.acquisition_failed.connect(self.on_acquisition_failed)
         self.thread.start()
 
     def dump_specific_processes(self):
         self._show_progress_dialog("Process Dump", "Fetching remote process list...")
-        params = self.parent().connection_params
-        self.thread = MemoryAcquisitionThread('list_processes', params)
+        self.thread = MemoryAcquisitionThread("list_processes", self.parent().connection_params)
         self.thread.process_list_ready.connect(self.on_process_list_ready)
         self.thread.acquisition_failed.connect(self.on_acquisition_failed)
         self.thread.start()
@@ -727,90 +639,36 @@ class MemoryOptionsDialog(QDialog):
         if not processes:
             QMessageBox.critical(self, "Error", "Could not retrieve remote process list.")
             return
-
         dialog = ProcessSelectionDialog(processes, self)
-        if dialog.exec_() == QDialog.Accepted:
-            pids = dialog.get_selected_pids()
-            if not pids:
-                QMessageBox.warning(self, "No Selection", "No processes were selected.")
-                return
-            
-            self._show_progress_dialog("Process Dump", f"Starting dump for {len(pids)} processes...")
-            params = self.parent().connection_params
-            self.thread = MemoryAcquisitionThread('process_dump', params, pids=pids)
-            self.thread.progress_update.connect(self.progress_dialog.setLabelText)
-            self.thread.acquisition_complete.connect(self.on_acquisition_complete)
-            self.thread.acquisition_failed.connect(self.on_acquisition_failed)
-            self.thread.start()
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        pids = dialog.get_selected_pids()
+        if not pids:
+            QMessageBox.warning(self, "No Selection", "No processes were selected.")
+            return
+        self._show_progress_dialog("Process Dump", f"Starting dump for {len(pids)} processes...")
+        self.thread = MemoryAcquisitionThread("process_dump", self.parent().connection_params, pids=pids, output_dir=self._evidence_dir())
+        self.thread.progress_update.connect(self.progress_dialog.setLabelText)
+        self.thread.acquisition_complete.connect(lambda files: self.on_acquisition_complete(files, "remote_process_dump"))
+        self.thread.acquisition_failed.connect(self.on_acquisition_failed)
+        self.thread.start()
 
-    def on_acquisition_complete(self, dump_files):
+    def on_acquisition_complete(self, dump_files, evidence_type):
         self.progress_dialog.close()
-        QMessageBox.information(self, "Success", f"Successfully acquired {len(dump_files)} dump file(s).")
-        main_window = self.parent()
-        # Add all dumped files to the evidence table
-        for file_path in dump_files:
-            file_name = os.path.basename(file_path)
-            try:
-                size = os.path.getsize(file_path)
-                size_str = f"{size / 1024 / 1024:.1f} MB" if size > 1024*1024 else f"{size / 1024:.1f} KB"
-            except OSError:
-                size_str = "Unknown"
-            main_window.add_evidence_row(file_name, size_str)
-
-        # Get the case path directly from the main window (which is the RemoteConnectionPage)
-        case_path = main_window.selected_case_path if hasattr(main_window, 'selected_case_path') else None
-
-        if not case_path:
-            # Fallback to prompting if the case path isn't set for some reason
-            QMessageBox.warning(self, "Case Not Found", "Could not find the selected case. You will be prompted to select a folder.")
-            case_path = self._prompt_case_selection()
-            if case_path and hasattr(main_window, 'set_case_path'):
-                main_window.set_case_path(case_path)
-        
-        if case_path:
-            try:
-                evidence_dir = os.path.join(case_path, "evidence")
-                os.makedirs(evidence_dir, exist_ok=True)
-                # Move dump files to evidence dir
-                moved_files = []
-                for file_path in dump_files:
-                    dest_path = os.path.join(evidence_dir, os.path.basename(file_path))
-                    if os.path.abspath(file_path) != os.path.abspath(dest_path):
-                        try:
-                            os.replace(file_path, dest_path)
-                        except Exception:
-                            # fallback to copy if replace fails
-                            import shutil
-                            shutil.copy2(file_path, dest_path)
-                    moved_files.append(dest_path)
-                # Save evidence info
-                evidence_info = {
-                    "files": moved_files,
-                    "timestamp": str(datetime.now()),
-                    "type": "remote_process_dump"
-                }
-                evidence_file = os.path.join(evidence_dir, f"evidence_{len(os.listdir(evidence_dir)) + 1}.json")
-                with open(evidence_file, "w", encoding="utf-8") as f:
-                    json.dump(evidence_info, f, indent=2)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save evidence: {e}")
+        page = self.parent()
+        if dump_files:
+            record_evidence(page.selected_case_path, dump_files, evidence_type, source=page.connection_params.get("remote_ip", ""),
+                            compute_hashes=evidence_type != "remote_full_memory_dump")
+            page._reload_evidence_table()
+            QMessageBox.information(self, "Success", f"Acquired {len(dump_files)} dump file(s) into\n{self._evidence_dir()}")
+        else:
+            QMessageBox.warning(self, "Nothing acquired", "No dump files were produced.")
         self.accept()
 
     def on_acquisition_failed(self, error_message):
         self.progress_dialog.close()
         QMessageBox.critical(self, "Acquisition Failed", error_message)
 
-    def _prompt_case_selection(self):
-        # Prompt user to select a case folder using QFileDialog
-        cases_dir = os.path.join(os.getcwd(), "cases")
-        if not os.path.exists(cases_dir):
-            QMessageBox.warning(self, "No Cases", "No case folders found. Please create a case first.")
-            return None
-        case_path = QFileDialog.getExistingDirectory(self, "Select Case Folder", cases_dir)
-        if not case_path:
-            QMessageBox.warning(self, "No Selection", "No case folder selected. Evidence will not be saved to a case.")
-            return None
-        return case_path
 
 class ProcessSelectionDialog(QDialog):
     def __init__(self, processes, parent=None):
@@ -821,33 +679,26 @@ class ProcessSelectionDialog(QDialog):
         self.setup_ui()
 
     def setup_ui(self):
-        self.setFixedSize(500, 400)
+        self.resize(520, 480)
         layout = QVBoxLayout(self)
-
         self.list_widget = QListWidget()
         for pid, name in self.processes:
             item = QListWidgetItem(f"{pid}: {name}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             self.list_widget.addItem(item)
-
         dump_button = QPushButton("Dump Selected Processes")
         dump_button.clicked.connect(self.on_submit)
-
         layout.addWidget(self.list_widget)
         layout.addWidget(dump_button)
 
     def on_submit(self):
-        self.selected_pids.clear()
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                pid = self.processes[i][0]
-                self.selected_pids.append(pid)
+        self.selected_pids = [self.processes[i][0] for i in range(self.list_widget.count()) if self.list_widget.item(i).checkState() == Qt.Checked]
         self.accept()
 
     def get_selected_pids(self):
         return self.selected_pids
+
 
 class MemoryAcquisitionThread(QThread):
     progress_update = Signal(str)
@@ -855,178 +706,102 @@ class MemoryAcquisitionThread(QThread):
     acquisition_failed = Signal(str)
     process_list_ready = Signal(list)
 
-    def __init__(self, mode, connection_params, pids=None, parent=None):
+    def __init__(self, mode, connection_params, pids=None, output_dir=None, parent=None):
         super().__init__(parent)
-        self.mode = mode
-        self.params = connection_params
-        self.pids = pids
+        self.mode, self.params, self.pids = mode, connection_params, pids
+        self.output_dir = output_dir or os.getcwd()
 
     def run(self):
-        if self.mode == 'full_dump':
-            self._run_full_dump()
-        elif self.mode == 'list_processes':
-            self._run_list_processes()
-        elif self.mode == 'process_dump':
-            self._run_process_dump()
+        try:
+            if self.mode == "full_dump":
+                self._run_full_dump()
+            elif self.mode == "list_processes":
+                self._run_list_processes()
+            elif self.mode == "process_dump":
+                self._run_process_dump()
+        except (subprocess.CalledProcessError, subprocess.SubprocessError, FileNotFoundError, OSError) as error:
+            message = f"An error occurred: {error}"
+            if getattr(error, "stderr", None):
+                message += f"\nStderr: {error.stderr}"
+            self.acquisition_failed.emit(message)
 
-    def _run_command(self, command, check=True, **kwargs):
-        return subprocess.run(command, check=check, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, **kwargs)
+    def _remote_temp(self, prefix):
+        folder = f"{prefix}_{uuid.uuid4().hex[:8]}"
+        remote_dir = f"C:\\Windows\\Temp\\{folder}"
+        unc_dir = f"\\\\{self.params['remote_ip']}\\C$\\Windows\\Temp\\{folder}"
+        return remote_dir, unc_dir
 
     def _run_full_dump(self):
-        try:
-            remote_ip = self.params['remote_ip']
-            remote_domain = self.params['remote_domain']
-            remote_user = self.params['remote_user']
-            remote_password = self.params['remote_password']
-
-            local_winpmem_path = r"winpmem_mini_x64_rc2.exe"
-            if not os.path.isfile(local_winpmem_path):
-                self.acquisition_failed.emit(f"Tool not found: {local_winpmem_path}. Please place it in the application's root directory.")
-                return
-
-            self.progress_update.emit("Creating remote temp directory...")
-            random_folder_name = f"mem_acq_{uuid.uuid4().hex[:8]}"
-            remote_acq_dir = f"C:\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}"
-            remote_winpmem_path = f"{remote_acq_dir}\\{os.path.basename(local_winpmem_path)}"
-            remote_dump_path = f"{remote_acq_dir}\\remote_live_memory_dump.mem"
-            local_dump_path = os.path.join(os.getcwd(), "remote_live_memory_dump.mem")
-            
-            psexec_base_cmd = ["PsExec.exe",f"\\\\{remote_ip}", "-accepteula", "-u", f"{remote_domain}\\{remote_user}", "-p", remote_password, "-h"]
-            
-            self._run_command([*psexec_base_cmd, "cmd", "/c", "mkdir", remote_acq_dir])
-
-            self.progress_update.emit("Copying winpmem to remote host...")
-            self._run_command(["xcopy", local_winpmem_path, f"\\\\{remote_ip}\\C$\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}\\", "/Y"])
-
-            self.progress_update.emit("Running winpmem on remote host (this may take a while)...")
-            self._run_command([*psexec_base_cmd, "-s", remote_winpmem_path, remote_dump_path], check=False) # winpmem might have non-zero exit code
-
-            self.progress_update.emit("Copying memory dump to local machine...")
-            self._run_command(["xcopy", f"\\\\{remote_ip}\\C$\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}\\remote_live_memory_dump.mem", local_dump_path, "/Y"])
-            
-            self.progress_update.emit("Cleaning up remote files...")
-            self._run_command([*psexec_base_cmd, "cmd", "/c", f"rmdir /S /Q {remote_acq_dir}"])
-            
-            self.acquisition_complete.emit([local_dump_path])
-
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"An error occurred: {e}"
-            if hasattr(e, 'stderr'):
-                error_msg += f"\nStderr: {e.stderr}"
-            self.acquisition_failed.emit(error_msg)
+        if not os.path.isfile(WINPMEM_EXE):
+            self.acquisition_failed.emit(f"Tool not found: {WINPMEM_EXE}")
+            return
+        remote_dir, unc_dir = self._remote_temp("mem_acq")
+        remote_dump = f"{remote_dir}\\memory.raw"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        local_dump = os.path.join(self.output_dir, f"memory_{self.params['remote_ip'].replace('.', '_')}_{stamp}.raw")
+        self.progress_update.emit("Creating remote temp directory ...")
+        run_quiet([*psexec_base(self.params), "cmd", "/c", "mkdir", remote_dir], timeout=120)
+        self.progress_update.emit("Copying winpmem to remote host ...")
+        run_quiet(["xcopy", WINPMEM_EXE, unc_dir + "\\", "/Y"], timeout=300)
+        self.progress_update.emit("Running winpmem on the remote host (this may take several minutes) ...")
+        run_quiet([*psexec_base(self.params), "-s", f"{remote_dir}\\{os.path.basename(WINPMEM_EXE)}", remote_dump], check=False, timeout=3600)
+        self.progress_update.emit("Copying memory image to the case folder ...")
+        os.makedirs(self.output_dir, exist_ok=True)
+        run_quiet(["robocopy", unc_dir, self.output_dir, "memory.raw", "/R:1", "/W:5", "/NP"], check=False, timeout=7200)
+        staged = os.path.join(self.output_dir, "memory.raw")
+        if not os.path.isfile(staged):
+            self.acquisition_failed.emit("winpmem produced no image (is the target 64-bit Windows with an admin account?)")
+            return
+        os.replace(staged, local_dump)
+        self.progress_update.emit("Cleaning up remote files ...")
+        run_quiet([*psexec_base(self.params), "cmd", "/c", f"rmdir /S /Q {remote_dir}"], check=False, timeout=120)
+        self.acquisition_complete.emit([local_dump])
 
     def _run_list_processes(self):
-        try:
-            remote_ip = self.params['remote_ip']
-            remote_domain = self.params['remote_domain']
-            remote_user = self.params['remote_user']
-            remote_password = self.params['remote_password']
+        result = run_quiet([*psexec_base(self.params), "tasklist", "/FO", "CSV"], timeout=120)
+        lines = result.stdout.strip().splitlines()[1:]
+        processes = parse_processes(lines)
+        if not processes:
+            self.acquisition_failed.emit(f"Could not parse remote process list. Raw output:\n{result.stdout[:2000]}")
+            return
+        self.process_list_ready.emit(processes)
 
-            psexec_base_cmd = [
-                "PsExec.exe", f"\\\\{remote_ip}", "-accepteula",
-                "-u", f"{remote_domain}\\{remote_user}", "-p", remote_password, "-h"
-            ]
-            result = self._run_command([*psexec_base_cmd, "tasklist", "/FO", "CSV"])
-            
-            # Use universal newlines for cross-platform compatibility
-            lines = result.stdout.strip().split('\n')
-            if len(lines) > 1:
-                lines = lines[1:]  # Skip header
-            else:
-                lines = []
-
-            remote_processes = parse_processes(lines)
-            if not remote_processes:
-                # If parsing failed, show the raw output for debugging
-                self.acquisition_failed.emit(
-                    f"Could not parse remote process list. Raw output:\n{result.stdout}"
-                )
-                return
-
-            self.process_list_ready.emit(remote_processes)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"Failed to list remote processes: {e}"
-            if hasattr(e, 'stderr'):
-                error_msg += f"\nStderr: {e.stderr}"
-            self.acquisition_failed.emit(error_msg)
-        except Exception as e:
-            self.acquisition_failed.emit(f"Unexpected error: {e}")
-    
     def _run_process_dump(self):
-        try:
-            remote_ip = self.params['remote_ip']
-            remote_domain = self.params['remote_domain']
-            remote_user = self.params['remote_user']
-            remote_password = self.params['remote_password']
+        if not os.path.isfile(PROCDUMP_EXE):
+            self.acquisition_failed.emit(f"Tool not found: {PROCDUMP_EXE}")
+            return
+        remote_dir, unc_dir = self._remote_temp("proc_dump")
+        self.progress_update.emit("Creating remote temp directory ...")
+        run_quiet([*psexec_base(self.params), "cmd", "/c", "mkdir", remote_dir], timeout=120)
+        self.progress_update.emit("Copying procdump to remote host ...")
+        run_quiet(["xcopy", PROCDUMP_EXE, unc_dir + "\\", "/Y"], timeout=300)
+        local_output_dir = os.path.join(self.output_dir, f"process_dumps_{datetime.now():%Y%m%d_%H%M%S}")
+        os.makedirs(local_output_dir, exist_ok=True)
+        local_files = []
+        for index, pid in enumerate(self.pids):
+            self.progress_update.emit(f"Dumping process {pid} ({index + 1}/{len(self.pids)}) ...")
+            file_name = f"process_{pid}.dmp"
+            run_quiet([*psexec_base(self.params), f"{remote_dir}\\procdump.exe", "-accepteula", "-ma", str(pid), f"{remote_dir}\\{file_name}"],
+                      check=False, timeout=1800)
+            run_quiet(["robocopy", unc_dir, local_output_dir, file_name, "/R:1", "/W:5", "/NP"], check=False, timeout=3600)
+            local_path = os.path.join(local_output_dir, file_name)
+            if os.path.isfile(local_path):
+                local_files.append(local_path)
+            else:
+                logger.warning("Dump for PID %s was not produced", pid)
+        self.progress_update.emit("Cleaning up remote files ...")
+        run_quiet([*psexec_base(self.params), "cmd", "/c", f"rmdir /S /Q {remote_dir}"], check=False, timeout=120)
+        self.acquisition_complete.emit(local_files)
 
-            local_procdump_path = "procdump.exe"
-            if not os.path.isfile(local_procdump_path):
-                self.acquisition_failed.emit(f"Tool not found: {local_procdump_path}. Please place it in the application's root directory.")
-                return
-            
-            self.progress_update.emit("Creating remote temp directory...")
-            random_folder_name = f"proc_dump_{uuid.uuid4().hex[:8]}"
-            remote_acq_dir = f"C:\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}"
-            remote_procdump_path = f"{remote_acq_dir}\\procdump.exe"
-            
-            psexec_base_cmd = ["PsExec.exe", f"\\\\{remote_ip}", "-accepteula", "-u", f"{remote_domain}\\{remote_user}", "-p", remote_password, "-h"]
-
-            self._run_command([*psexec_base_cmd, "cmd", "/c", "mkdir", remote_acq_dir])
-
-            self.progress_update.emit("Copying procdump to remote host...")
-            self._run_command(["xcopy", local_procdump_path, f"\\\\{remote_ip}\\C$\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}\\", "/Y"])
-
-            local_dump_files = []
-            local_output_dir = os.path.join(os.getcwd(), "remote_process_dumps")
-            os.makedirs(local_output_dir, exist_ok=True)
-
-            for i, pid in enumerate(self.pids):
-                self.progress_update.emit(f"Dumping process {pid} ({i+1}/{len(self.pids)})...")
-                remote_output_file = f"{remote_acq_dir}\\process_{pid}_dump.dmp"
-                self._run_command([*psexec_base_cmd, remote_procdump_path, "-accepteula", "-ma", str(pid), remote_output_file], check=False)
-                
-                self.progress_update.emit(f"Copying dump for {pid}...")
-                local_file_name = f"process_{pid}_dump.dmp"
-                local_file_path = os.path.join(local_output_dir, local_file_name)
-                remote_source_dir = f"\\\\{remote_ip}\\C$\\Users\\{remote_user}\\AppData\\Local\\Temp\\{random_folder_name}"
-
-                # Use robocopy for a more robust copy that doesn't hang on errors
-                copy_result = self._run_command(["robocopy", remote_source_dir, local_output_dir, local_file_name, "/R:1", "/W:5"], check=False)
-                
-                # Check if the file was actually copied and exists locally
-                if os.path.exists(local_file_path):
-                    local_dump_files.append(local_file_path)
-                else:
-                    log_output = f"Robocopy failed to copy dump for PID {pid}."
-                    if copy_result.stdout:
-                        log_output += f"\nStdout: {copy_result.stdout.strip()}"
-                    if copy_result.stderr:
-                        log_output += f"\nStderr: {copy_result.stderr.strip()}"
-                    logging.warning(log_output)
-
-            self.progress_update.emit("Cleaning up remote files...")
-            self._run_command([*psexec_base_cmd, "cmd", "/c", f"rmdir /S /Q {remote_acq_dir}"])
-
-            self.acquisition_complete.emit(local_dump_files)
-
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"An error occurred: {e}"
-            if hasattr(e, 'stderr'):
-                error_msg += f"\nStderr: {e.stderr}"
-            self.acquisition_failed.emit(error_msg)
 
 def parse_processes(lines):
     processes = []
     for line in lines:
-        # Remove quotes and split by comma
-        parts = line.strip('"').split('","')
+        parts = line.strip().strip('"').split('","')
         if len(parts) >= 2:
-            name = parts[0]
             try:
-                pid = int(parts[1])
-                processes.append((pid, name))
+                processes.append((int(parts[1]), parts[0]))
             except ValueError:
                 continue
-    # sort processes by PID
     processes.sort(key=lambda x: x[0])
     return processes

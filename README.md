@@ -36,53 +36,54 @@ Anubis Forensics GUI is a powerful digital forensics tool that provides:
 
 ```
 Anubis-Forensics-GUI/
-├── assets/                 # UI assets and images
-│   └── 4x/                # High-resolution icons
-├── cases/                  # Case management directory
-│   ├── case_number_name/   # Individual case folders
-│   │   ├── info.json      # Case metadata
-│   │   └── evidence/      # Evidence files
-├── config.py              # Centralized configuration
-├── main.py                # Application entry point
-├── models/                # Data models and structures
-│   ├── __init__.py
-│   └── data_models.py     # Core data models
-├── pages/                 # PyQt5 UI pages
-│   ├── analysis_page.py   # Forensic analysis interface
-│   ├── base_page.py       # Base page with common UI elements
+├── main.py                     # Application entry point (splash screen → main window)
+├── config.py                   # Configuration + .env loader
+├── requirements.txt            # Python dependencies
+├── run.bat                     # One-click launcher (creates .venv on first run)
+├── .env.example                # Optional API keys (VirusTotal, LLM)
+├── assets/4x/                  # Icons and logo
+├── cases/                      # One folder per case: info.json, evidence/, memory_analysis/,
+│                               #   web_artifacts/, srum_analysis/, registry_analysis/, usb_analysis/, reports/
+├── memory_analysis/            # Bundled sample Volatility/VirusTotal output (used when a case has none)
+├── pages/                      # PyQt5 user interface
+│   ├── base_page.py            # Shared top bar, tab bar and widget styles
+│   ├── main_window.py          # Page navigation and the selected case
+│   ├── home_page.py            # Create case / add evidence / browse cases
 │   ├── case_creation_page.py
-│   ├── home_page.py
-│   ├── main_window.py     # Main application window
-│   ├── remote_acquisition_page.py
-│   ├── remote_connection_page.py
-│   ├── resource_page.py
+│   ├── resource_page.py        # Remote acquisition or local image
+│   ├── remote_acquisition_page.py   # Connect to a target (PsExec + C$ share)
+│   ├── remote_connection_page.py    # Targeted locations, file browser, memory dumps, evidence table
+│   ├── analysis_page.py        # MEMORY / WEB / SRUM / REGISTRY / USB analysis views
+│   ├── report_page.py          # Report generation and Markdown/HTML/PDF export
 │   └── splash_screen.py
-├── PSTools/               # Windows system administration tools
-│   ├── PsExec.exe         # Remote execution
-│   ├── PsInfo.exe         # System information
-│   └── [other PSTools]    # Complete PSTools suite
-├── services/              # Business logic and API layer
-│   ├── __init__.py
-│   ├── api_client.py      # Backend API client
-│   ├── usb_analyzer.py    # USB device analysis
-│   └── web_artifact_extractor.py # Web artifact extraction
-├── utils/                 # Utility functions
-│   ├── file_browser_launcher.py # File browser integration
-│   └── logger.py          # Logging utilities
-├── requirements.txt       # Python dependencies
-├── filebrowser.exe        # Remote file browser
-├── procdump.exe           # Process memory dump tool
-├── winpmem_mini_x64_rc2.exe # Memory acquisition tool
-└── README.md             # This file
+├── services/                   # Forensic logic (no Qt widgets)
+│   ├── memory_analyzer.py      # Volatility 3 pipeline, file dumping/hashing, VirusTotal client
+│   ├── web_artifact_extractor.py    # Chromium/Firefox history, downloads, cookies, logins, bookmarks
+│   ├── srum_analyzer.py        # SRUDB.dat parsing with dissect.esedb (+ SOFTWARE hive look-ups)
+│   ├── registry_analyzer.py    # RawCopy acquisition, regipy plugins, hive diff, transaction logs
+│   ├── usb_analyzer.py         # USB history from live registry or SYSTEM hive + triage report
+│   ├── report_service.py       # Rule-based report builder with optional LLM narrative
+│   ├── evidence_store.py       # Evidence descriptors (paths, sizes, SHA256) inside a case
+│   └── api_client.py           # Optional backend API client (not required to run the GUI)
+├── utils/
+│   ├── paths.py                # Locations of bundled tools and case sub-folders
+│   ├── logger.py
+│   └── file_browser_launcher.py     # Helper process that shows the remote FileBrowser UI
+├── PSTools/PsExec.exe          # Remote execution
+├── RawCopy.exe                 # Copies locked files (registry hives, SRUM, event logs)
+├── winpmem_mini_x64_rc2.exe    # Full memory acquisition
+├── procdump.exe                # Per-process memory dumps
+├── filebrowser.exe             # Web file browser deployed on the target
+└── rla.exe                     # Fallback tool for registry transaction logs
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- **OS**: Windows 10/11 (for full functionality)
-- **Python**: 3.8 or higher
-- **Administrative Privileges**: Required for remote acquisition features
-- **Network Access**: For remote machine connections
+- **OS**: Windows 10/11 (registry, SRUM and remote acquisition use Windows tools)
+- **Python**: 3.10 or newer (tested on 3.13 and 3.14)
+- **Administrative privileges**: needed to copy locked files (registry hives, SRUDB.dat) from the local machine
+- **Network access**: for remote acquisition (SMB `C$` share + PsExec) and for the optional VirusTotal / LLM look-ups
 
 ### Installation
 
@@ -92,45 +93,45 @@ Anubis-Forensics-GUI/
    cd Anubis-Forensics-GUI
    ```
 
-2. **Install dependencies**
+2. **Run it** — `run.bat` creates a virtual environment and installs the dependencies on first start:
+   ```bat
+   run.bat
+   ```
+   Or manually:
    ```bash
-   pip install -r requirements.txt
+   py -3 -m venv .venv
+   .venv\Scripts\python -m pip install -r requirements.txt
+   .venv\Scripts\python main.py
    ```
 
-3. **Configure environment variables** (optional)
-   ```bash
-   # Create .env file or set environment variables
-   export API_BASE_URL="http://localhost:8000/api/v1"
-   export DB_HOST="localhost"
-   export DB_PORT="5432"
-   export LOG_LEVEL="INFO"
-   ```
+3. **Optional API keys** — copy `.env.example` to `.env` and fill in:
+   - `VIRUSTOTAL_API_KEY` to check dumped files and IP addresses against VirusTotal
+   - `LLM_API_KEY` (+ `LLM_API_BASE`, `LLM_MODEL`) to let an OpenAI-compatible LLM (Together AI, OpenAI, Groq, Ollama…) write the narrative sections of the report. Without a key the report is still generated by the built-in rule-based engine.
 
-4. **Run the application**
-   ```bash
-   python main.py
-   ```
+### Typical workflow
+
+1. **Case Info** → create a case (or pick an existing one with *Add Evidence To Existing Case*). Everything the tool produces is stored under `cases/<number>_<name>/`.
+2. **Resource** → *Remote Acquisition* (connect to a target with a local administrator account, then acquire targeted locations, browse files, or dump memory with winpmem/procdump) or *Local Image* (reference evidence files already on disk).
+3. **Analyze Evidence**
+   - **MEMORY**: select a memory image and run Volatility 3 (`windows.info`, `pslist`, `cmdline`, `netscan`, `malfind`, `userassist`), dump files of injected processes, hash them and optionally query VirusTotal. Results are browsable per plugin.
+   - **WEB**: extract history, downloads, search terms, cookies, saved logins and bookmarks from Edge/Chrome/Brave/Opera/Firefox profiles (remote host, this machine, or any profile/user folder).
+   - **SRUM**: parse `SRUDB.dat` (network usage, application resource usage, connectivity…) with optional `SOFTWARE` hive for user names and Wi-Fi SSIDs.
+   - **REGISTRY**: acquire hives with RawCopy, run regipy plugins, diff two hives, apply transaction logs, parse headers.
+   - **USB**: USB device history from the live registry or from an acquired `SYSTEM` hive, with triage rules and an HTML report.
+4. **Report** → generate the Markdown report (rule-based, optionally enriched by an LLM) and export it as Markdown, HTML or PDF.
 
 ## 🔧 Configuration
 
-### Environment Variables
+### Environment Variables (`.env`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_BASE_URL` | `http://localhost:8000/api/v1` | Backend API base URL |
-| `API_TIMEOUT` | `30` | API request timeout (seconds) |
-| `API_RETRY_ATTEMPTS` | `3` | Number of API retry attempts |
-| `API_KEY_HEADER` | `X-API-Key` | API key header name |
-| `DB_HOST` | `localhost` | Database host |
-| `DB_PORT` | `5432` | Database port |
-| `DB_NAME` | `anubis_forensics` | Database name |
-| `DB_USER` | `postgres` | Database username |
-| `DB_PASSWORD` | `` | Database password |
+| `VIRUSTOTAL_API_KEY` | `` | Enables VirusTotal look-ups (free key: 4 requests/minute) |
+| `LLM_API_KEY` | `` | API key for the report narrative (any OpenAI-compatible endpoint) |
+| `LLM_API_BASE` | `https://api.together.xyz/v1` | Chat completions endpoint |
+| `LLM_MODEL` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | Model name |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_FILE` | `logs/app.log` | Log file path |
-| `DEBUG` | `False` | Debug mode |
-| `DATA_DIR` | `data` | Data directory |
-| `TEMP_DIR` | `temp` | Temporary files directory |
 
 ## 🎯 Core Features
 

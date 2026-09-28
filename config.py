@@ -41,10 +41,42 @@ class AppConfig:
     temp_dir: str = "temp"
     max_file_size: int = 100 * 1024 * 1024  # 100MB
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_project_path(path_value: str) -> str:
+    """Return an absolute path rooted at the project directory unless an absolute path was supplied."""
+    if not path_value:
+        return PROJECT_ROOT
+
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return str(candidate)
+
+    return str((Path(PROJECT_ROOT) / candidate).resolve())
+
+
+def load_dotenv(path: str = os.path.join(PROJECT_ROOT, ".env")) -> None:
+    """Load KEY=VALUE pairs from a .env file into the environment (no override)."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key, value = key.strip(), value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
 class Config:
     """Centralized configuration management"""
-    
+
     def __init__(self):
+        load_dotenv()
         self._load_environment()
         self._setup_directories()
     
@@ -58,7 +90,7 @@ class Config:
             api_key_header=os.getenv("API_KEY_HEADER", "X-API-Key"),
             content_type=os.getenv("API_CONTENT_TYPE", "application/json")
         )
-        
+
         # Database Configuration
         self.database = DatabaseConfig(
             host=os.getenv("DB_HOST", "localhost"),
@@ -68,23 +100,23 @@ class Config:
             password=os.getenv("DB_PASSWORD", ""),
             connection_pool_size=int(os.getenv("DB_POOL_SIZE", "10"))
         )
-        
+
         # Logging Configuration
         self.logging = LoggingConfig(
             level=os.getenv("LOG_LEVEL", "INFO"),
             format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
-            file_path=os.getenv("LOG_FILE", "logs/app.log"),
+            file_path=resolve_project_path(os.getenv("LOG_FILE", "logs/app.log")),
             max_file_size=int(os.getenv("LOG_MAX_SIZE", str(10 * 1024 * 1024))),
             backup_count=int(os.getenv("LOG_BACKUP_COUNT", "5"))
         )
-        
+
         # Application Configuration
         self.app = AppConfig(
             name=os.getenv("APP_NAME", "Anubis Forensics"),
             version=os.getenv("APP_VERSION", "1.0.0"),
             debug=os.getenv("DEBUG", "False").lower() == "true",
-            data_dir=os.getenv("DATA_DIR", "data"),
-            temp_dir=os.getenv("TEMP_DIR", "temp"),
+            data_dir=resolve_project_path(os.getenv("DATA_DIR", "data")),
+            temp_dir=resolve_project_path(os.getenv("TEMP_DIR", "temp")),
             max_file_size=int(os.getenv("MAX_FILE_SIZE", str(100 * 1024 * 1024)))
         )
     

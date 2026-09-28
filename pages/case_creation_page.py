@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QDate, QSize
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, COLOR_GRAY, TAB_NAMES
 import os
 import json
+from utils.paths import CASES_DIR, build_case_directory, ensure_case_structure
 
 # Constants
 FONT_LABEL = QFont("Cascadia Mono", 13,)
@@ -16,6 +17,7 @@ FONT_CARD = QFont("Cascadia Mono", 18, QFont.Weight.Bold)
 class CaseCreationPage(BasePage):
     back_requested = pyqtSignal()
     resource_requested = pyqtSignal()
+    case_created = pyqtSignal(str)  # path of the new case folder
 
     def __init__(self):
         super().__init__()
@@ -157,8 +159,10 @@ class CaseCreationPage(BasePage):
         self.main_layout.addStretch()
 
     def _handle_go_to_source_click(self):
-        print("Go To Source button clicked!")
-        self.resource_requested.emit()
+        if getattr(self, "created_case_path", None):
+            self.case_created.emit(self.created_case_path)
+        else:
+            self.resource_requested.emit()
 
     def _choose_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files")
@@ -218,26 +222,15 @@ class CaseCreationPage(BasePage):
             show_custom_messagebox(QMessageBox.Warning, "Missing Data", "Case number and name are required.")
             return
 
-        # Determine parent directory for the case folder
-        parent_dir = None
-        if files:
-            # Use the directory of the first file as the parent directory
-            first_file = files.split(';')[0].strip()
-            if os.path.isfile(first_file):
-                parent_dir = os.path.dirname(first_file)
-            elif os.path.isdir(first_file):
-                parent_dir = first_file
-        if not parent_dir:
-            parent_dir = os.path.join(os.getcwd(), "cases")
+        parent_dir = CASES_DIR
         os.makedirs(parent_dir, exist_ok=True)
 
-        # Create unique folder for the case
-        folder_name = f"{case_number}_{case_name}".replace(" ", "_")
-        case_folder = os.path.join(parent_dir, folder_name)
+        case_folder = build_case_directory(case_number, case_name, parent_dir=parent_dir)
         if os.path.exists(case_folder):
-            show_custom_messagebox(QMessageBox.Warning, "Case Exists", "A case with this number and name already exists in the selected location.")
+            show_custom_messagebox(QMessageBox.Warning, "Case Exists", "A case with this number and name already exists in the project cases folder.")
             return
         os.makedirs(case_folder)
+        ensure_case_structure(case_folder)
 
         # Save case info as JSON
         case_info = {
@@ -253,5 +246,7 @@ class CaseCreationPage(BasePage):
             with open(info_path, "w", encoding="utf-8") as f:
                 json.dump(case_info, f, indent=2)
             show_custom_messagebox(QMessageBox.Information, "Success", f"Case '{case_name}' created successfully at {case_folder}.")
+            self.created_case_path = case_folder
+            self.case_created.emit(case_folder)
         except Exception as e:
             show_custom_messagebox(QMessageBox.Critical, "Error", f"Failed to save case: {e}")

@@ -242,4 +242,21 @@ secrets.py
 *.nvram
 *.vbox
 *.ova
-*.ovf 
+*.ovf
+# Anubis runtime files
+.env
+logs/
+data/
+temp/
+filebrowser.log
+web_artifacts_*/
+cases/*/evidence/
+cases/*/memory_analysis/
+cases/*/web_artifacts/
+cases/*/registry_analysis/
+cases/*/srum_analysis/
+cases/*/usb_analysis/
+cases/*/reports/
+*.raw
+*.mem
+*.dmp

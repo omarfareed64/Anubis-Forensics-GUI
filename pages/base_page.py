@@ -5,6 +5,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QFont, QIcon
 from PyQt5.QtCore import Qt, pyqtSignal, QSize
 
+from utils.paths import asset
+
 # Constants
 FONT_TITLE = QFont("Cascadia Mono", 22, QFont.Weight.Bold)
 FONT_TAB = QFont("Archivo", 16, QFont.Weight.Bold)
@@ -28,7 +30,8 @@ class BasePage(QWidget):
 
     def _setup_watermark(self):
         """Setup the watermark logo that appears on all pages"""
-        watermark_pixmap = QPixmap("assets/4x/logoAsset 21@4x.png")
+        watermark_path = asset("logoAsset 21@4x.png")
+        watermark_pixmap = QPixmap(watermark_path)
         if not watermark_pixmap.isNull():
             scaled = watermark_pixmap.scaled(3000, 3000, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.watermark.setPixmap(scaled)
@@ -169,17 +172,12 @@ class BasePage(QWidget):
                 font-weight: bold;
                 letter-spacing: 1.2px;
                 border: none;
-                transition: background-color 0.2s ease;
-            }}
+}}
             QPushButton:hover {{
                 background-color: {hover_color};
-                transform: translateY(-1px);
-                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
             }}
             QPushButton:pressed {{
                 background-color: {bg_color};
-                transform: translateY(0px);
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
             }}
         """
 
@@ -207,7 +205,7 @@ class BasePage(QWidget):
     def create_folder_button(self, callback=None, icon_size=48):
         """Create a standardized folder button with hover effects"""
         folder_button = QPushButton()
-        folder_button.setIcon(QIcon(QPixmap("assets/4x/folder_icon@4x.png").scaled(
+        folder_button.setIcon(QIcon(QPixmap(asset("folder_icon@4x.png")).scaled(
             icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
         folder_button.setIconSize(QSize(icon_size, icon_size))
         folder_button.setCursor(Qt.PointingHandCursor)
