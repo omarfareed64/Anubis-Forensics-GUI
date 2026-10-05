@@ -11,6 +11,8 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal
 
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, TAB_NAMES
+from services import filebrowser_session
+from utils.network import host_reachable
 from utils.paths import NO_WINDOW, PSEXEC_EXE, FILEBROWSER_EXE, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
@@ -43,8 +45,7 @@ class RemoteConnectionThread(QThread):
             if not os.path.isfile(FILEBROWSER_EXE):
                 return self._fail(f"filebrowser.exe not found at {FILEBROWSER_EXE}")
 
-            ping = subprocess.run(["ping", "-n", "1", "-w", "3000", remote_ip], capture_output=True, text=True, creationflags=NO_WINDOW)
-            if ping.returncode != 0:
+            if not host_reachable(remote_ip):
                 return self._fail(f"{remote_ip} is not reachable (ping failed). Check the IP address and the network.")
 
             logger.info("Connecting to remote C$ share ...")
@@ -66,13 +67,18 @@ class RemoteConnectionThread(QThread):
             if copy.returncode != 0:
                 return self._fail(f"Copying the agent failed:\n{(copy.stderr or copy.stdout).strip()}")
 
-            logger.info("Launching filebrowser remotely via PsExec ...")
+            # Every session gets its own database and random credentials, so FileBrowser always
+            # requires a login. Only the bcrypt hash of the password is sent to the target.
+            session = filebrowser_session.new_session()
+            password_hash = filebrowser_session.hash_password(session["fb_password"])
+            logger.info("Launching filebrowser remotely via PsExec (login required) ...")
             subprocess.Popen([PSEXEC_EXE, f"\\\\{remote_ip}", "-accepteula", "-u", f"{remote_domain}\\{remote_user}", "-p", remote_password,
-                              "-h", "C:\\filebrowser.exe", "--address", "0.0.0.0", "--port", "8080", "--noauth", "--root", "C:/"],
+                              "-h", filebrowser_session.REMOTE_EXE, *filebrowser_session.server_arguments(session, password_hash)],
                              creationflags=NO_WINDOW)
             time.sleep(3)
 
             self.connection_result.emit({
+                **session,
                 "status": "success",
                 "message": f"Successfully connected to {remote_ip}",
                 "remote_ip": remote_ip,

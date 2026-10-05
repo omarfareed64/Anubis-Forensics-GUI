@@ -42,6 +42,7 @@ Anubis-Forensics-GUI/
 ├── run.bat                     # One-click launcher (creates .venv on first run)
 ├── .env.example                # Optional API keys (VirusTotal, LLM)
 ├── assets/4x/                  # Icons and logo
+├── assets/design/              # UI design source (Adobe Illustrator)
 ├── cases/                      # One folder per case: info.json, evidence/, memory_analysis/,
 │                               #   web_artifacts/, srum_analysis/, registry_analysis/, usb_analysis/, reports/
 ├── memory_analysis/            # Bundled sample Volatility/VirusTotal output (used when a case has none)
@@ -64,11 +65,15 @@ Anubis-Forensics-GUI/
 │   ├── usb_analyzer.py         # USB history from live registry or SYSTEM hive + triage report
 │   ├── report_service.py       # Rule-based report builder with optional LLM narrative
 │   ├── evidence_store.py       # Evidence descriptors (paths, sizes, SHA256) inside a case
+│   ├── filebrowser_session.py  # Password-protected FileBrowser sessions on targets
 │   └── api_client.py           # Optional backend API client (not required to run the GUI)
 ├── utils/
 │   ├── paths.py                # Locations of bundled tools and case sub-folders
+│   ├── network.py              # Reliable reachability check (real echo reply, not just ping's exit code)
 │   ├── logger.py
-│   └── file_browser_launcher.py     # Helper process that shows the remote FileBrowser UI
+│   └── file_browser_launcher.py     # Helper process that shows the remote FileBrowser UI (auto-login)
+├── tests/                      # Unit tests: python -m unittest discover -v
+├── third_party/RawCopy/        # RawCopy source code (AutoIt) by Joakim Schicht
 ├── PSTools/PsExec.exe          # Remote execution
 ├── RawCopy.exe                 # Copies locked files (registry hives, SRUM, event logs)
 ├── winpmem_mini_x64_rc2.exe    # Full memory acquisition
@@ -682,7 +687,7 @@ For support and questions:
 - **WinPmem (`winpmem_mini_x64_rc2.exe`)**: full physical memory acquisition
 - **ProcDump**: per-process memory dumps
 - **RawCopy**: copying files that Windows keeps locked (registry hives, `SRUDB.dat`, event logs)
-- **FileBrowser**: temporary web file browser deployed on the target for manual file selection
+- **FileBrowser**: temporary web file browser deployed on the target for manual file selection, protected by a one-time login per session
 - **rla.exe**: fallback for applying registry transaction logs
 
 #### **AI Integration**
@@ -772,9 +777,11 @@ response = requests.post(
 )
 ```
 
-**6. Secrets live outside the code.** API keys are read from a git-ignored `.env` file. Passwords for remote targets are never written to disk; only the IP address, domain and user name of the last connection are remembered.
+**6. Secrets live outside the code.** API keys are read from a git-ignored `.env` file. Passwords for remote targets are never written to disk; only the IP address, domain and user name of the last connection are remembered. The file browser viewer receives its secrets through environment variables, not its command line.
 
-**7. Evidence databases are opened read-only.** Browser databases are first copied and then opened with SQLite's `mode=ro&immutable=1`, so neither the original nor the working copy is modified.
+**7. The remote file browser requires a login.** Each connection creates a new FileBrowser database on the target with a random user name and a random 32-character password. Only the bcrypt hash of the password is sent to the target. The viewer window logs in automatically, so the investigator never types it, and cleanup deletes the database when the window closes.
+
+**8. Evidence databases are opened read-only.** Browser databases are first copied and then opened with SQLite's `mode=ro&immutable=1`, so neither the original nor the working copy is modified.
 
 #### **How Each Analysis Option Is Implemented**
 
@@ -848,6 +855,7 @@ Verification answers the question "was the system built correctly?". Each requir
 | No secrets in the source code | Keys only in the git-ignored `.env`; the API key previously committed was removed from the history |
 | Reproducible installation | `run.bat` / `run.ps1` create the virtual environment and install `requirements.txt` |
 | Honest reporting | Files that no engine scanned are shown as "Not checked", never as "Clean" |
+| Remote file browser not open to the network | Login required; requests without a token, with a wrong password or with FileBrowser's default `admin/admin` are refused (unit tests against the real `filebrowser.exe`) |
 
 #### **Defects Found During Verification**
 
@@ -861,6 +869,7 @@ Testing found and fixed these defects. They are listed because they show what th
 | Files never scanned shown as "Clean" (0 of 0 engines) | The report, and the LLM, claimed malware was clean | Reported as "Not checked"; summary states that reputation is unknown |
 | Evidence descriptor numbering based on file count | An existing descriptor could be overwritten | Next number taken from the highest existing number |
 | Tool paths relative to the working directory | Tools not found when started from another folder | All paths resolved in `utils/paths.py` |
+| FileBrowser started with `--noauth` | Anyone on the target's network could browse its `C:` drive during a session | Random per-session credentials, login required, automatic login in the viewer |
 
 ### 4.4 Validation
 
@@ -868,11 +877,12 @@ Validation answers the question "does the system do what an investigator needs?"
 
 #### **Automated Unit Tests**
 
-The tests run with `python -m unittest discover -v`. All 8 tests pass.
+The tests run with `python -m unittest discover -v`. All 14 tests pass.
 
 | Test file | What it checks |
 |-----------|---------------|
 | `tests/test_config.py` | Data, log and case paths are project-relative; the case folder structure is created; the main window fits small and large screens |
+| `tests/test_filebrowser_session.py` | Sessions get unique, long passwords and their own database; `--noauth` is never used; cleanup removes the database. Against the real `filebrowser.exe` on 127.0.0.1: no access without login, wrong and default passwords refused, session credentials work |
 | `tests/test_virustotal_files.py` | Selection of dumped files for VirusTotal skips JSON, empty files and duplicate hashes, orders by importance and respects the lookup limit; results are saved most-detected first (uses a fake client, no network) |
 
 #### **End-to-End GUI Test**
@@ -953,7 +963,7 @@ All values were measured on the test machine described in section 4.1 in October
 
 | Operation | Data | Measured time |
 |-----------|------|---------------|
-| Unit test suite | 8 tests | 0.07 s |
+| Unit test suite | 14 tests, including a live FileBrowser | 0.9 s |
 | Registry header parsing | Default user `NTUSER.DAT` | < 0.1 s |
 | Registry plugin analysis | Default user `NTUSER.DAT`, 13 plugins | 0.1 s |
 | Registry comparison | Two copies of the same hive | 0.1 s |
@@ -1085,7 +1095,7 @@ The plan follows `ROADMAP.md`:
 
 **Security**
 - The remote password is passed to PsExec and `net use` on the command line, so it is visible in the local process list while they run.
-- FileBrowser runs on the target with `--noauth` on port 8080 for the duration of the session, so anyone on that network could browse the target's `C:` drive until it is cleaned up.
+- FileBrowser now requires a login, but it is served over plain HTTP on port 8080. Its login and the files viewed travel unencrypted on the network between the investigator and the target.
 - When a cloud LLM is used, findings (process names, IP addresses, hashes) leave the investigator's machine.
 
 **Forensic soundness**
@@ -1106,7 +1116,7 @@ The plan follows `ROADMAP.md`:
 
 #### **Areas for Improvement**
 - Hash files on the target before copying and compare them after transfer.
-- Replace FileBrowser's open web interface with an authenticated, short-lived session, or remove it in favour of targeted collection.
+- Serve FileBrowser over HTTPS, or tunnel it through the SMB session, so that its traffic is encrypted.
 - Avoid passwords on the command line, for example by using an existing authenticated session.
 - Record every action taken on a target in the case log, so that the tool's own footprint is documented.
 - Expand automated tests to all services with small, versioned sample inputs.

@@ -19,6 +19,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSignal as Signal
 
 from .base_page import BasePage, COLOR_ORANGE, COLOR_DARK, TAB_NAMES
 from services.evidence_store import record_evidence, list_evidence, human_size
+from utils.network import host_reachable
 from utils.paths import (NO_WINDOW, PSEXEC_EXE, WINPMEM_EXE, PROCDUMP_EXE, RAWCOPY_EXE, PROJECT_ROOT, asset,
                          case_subdir, CASE_EVIDENCE_SUBDIR)
 
@@ -170,13 +171,14 @@ class WebBrowserThread(QThread):
     """Runs the external file browser helper and waits for it to close."""
     browser_closed = Signal()
 
-    def __init__(self, command, parent=None):
+    def __init__(self, command, env=None, parent=None):
         super().__init__(parent)
         self.command = command
+        self.env = env
 
     def run(self):
         try:
-            process = subprocess.Popen(self.command, creationflags=NO_WINDOW)
+            process = subprocess.Popen(self.command, env=self.env, creationflags=NO_WINDOW)
             process.wait()
         except Exception as error:  # noqa: BLE001
             logger.error("Failed to run file browser process: %s", error)
@@ -192,11 +194,7 @@ class PingThread(QThread):
         self.ip = ip
 
     def run(self):
-        try:
-            completed = run_quiet(["ping", "-n", "1", "-w", "2000", self.ip], check=False, timeout=10)
-            self.result.emit(completed.returncode == 0)
-        except subprocess.SubprocessError:
-            self.result.emit(False)
+        self.result.emit(host_reachable(self.ip, timeout_ms=2000))
 
 
 class RemoteConnectionPage(BasePage):
@@ -457,8 +455,16 @@ class RemoteConnectionPage(BasePage):
             return
         script_path = os.path.join(PROJECT_ROOT, "utils", "file_browser_launcher.py")
         params = self.connection_params
-        command = [sys.executable, script_path, params["remote_ip"], params["remote_domain"], params["remote_user"], params["remote_password"]]
-        self.browser_thread = WebBrowserThread(command)
+        command = [sys.executable, script_path, params["remote_ip"], params["remote_domain"], params["remote_user"]]
+        # Secrets go through the environment, not the command line, so they do not show in the process list.
+        env = dict(os.environ)
+        env.update({
+            "ANUBIS_REMOTE_PASSWORD": params["remote_password"],
+            "ANUBIS_FB_USER": params.get("fb_user", ""),
+            "ANUBIS_FB_PASSWORD": params.get("fb_password", ""),
+            "ANUBIS_FB_DB": params.get("fb_db", ""),
+        })
+        self.browser_thread = WebBrowserThread(command, env=env)
         self.browser_thread.browser_closed.connect(self._on_browser_closed)
         self.browser_thread.start()
         QMessageBox.information(self, "Browser Launched",
