@@ -149,10 +149,10 @@ Anubis-Forensics-GUI/
 - **Automatic Cleanup**: Secure cleanup of remote services and temporary files
 
 ### 3. Local Evidence Collection
-- **Memory Forensics**: Local memory acquisition and analysis
-- **File System Analysis**: Comprehensive file system examination
-- **Resource Collection**: System resource and artifact gathering
-- **Evidence Preservation**: Secure evidence handling and storage
+- **Register Evidence**: Add disk images, memory images and other files already on disk to a case
+- **Memory Image Analysis**: Run the Volatility 3 pipeline on any memory image
+- **Locked File Acquisition**: Copy this machine's registry hives and SRUM database with RawCopy (Administrator rights needed)
+- **Evidence Records**: Every item is recorded with path, size, SHA-256 and timestamp
 
 ### 4. Web Artifact Extraction
 - **Browser Forensics**: Automated collection of browser artifacts
@@ -169,6 +169,8 @@ Anubis-Forensics-GUI/
 
 ## 🔍 **Five Forensic Analysis Options - Detailed Explanations**
 
+This section explains each type of analysis in general terms. What Anubis itself implements for each option is described in Chapter 4, section 4.2, "How Each Analysis Option Is Implemented".
+
 ### **1. Memory Analysis (RAM Forensics)**
 
 **What is Memory Analysis?**
@@ -184,7 +186,7 @@ Memory analysis, also known as RAM forensics or volatile memory forensics, invol
 
 **How Memory Analysis Works:**
 1. **Memory Acquisition**: Using tools like WinPmem to create a memory dump
-2. **Profile Detection**: Identifying the operating system version and architecture
+2. **Symbol Resolution**: Identifying the Windows kernel version and loading matching symbol tables (Volatility 2 called these "profiles")
 3. **Process Analysis**: Extracting running processes, their memory maps, and loaded modules
 4. **Network Analysis**: Identifying active network connections and listening ports
 5. **String Extraction**: Searching for meaningful text strings in memory
@@ -331,8 +333,8 @@ SRUM (System Resource Usage Monitor) analysis involves the examination of Window
 
 **How SRUM Analysis Works:**
 1. **Database Location**: Locating the SRUM database file (Windows\System32\sru\SRUDB.dat)
-2. **Database Access**: Using specialized tools to access the SQLite database
-3. **Query Execution**: Running SQL queries to extract usage data
+2. **Database Access**: Opening the ESE (Extensible Storage Engine) database, the same format used by other Windows components; it is not SQLite
+3. **Table Extraction**: Reading each provider table and resolving application and user IDs through `SruDbIdMapTable`
 4. **Data Parsing**: Converting raw data into meaningful forensic information
 5. **Timeline Analysis**: Creating chronological usage patterns
 6. **Cross-Reference Analysis**: Correlating data with other forensic sources
@@ -340,12 +342,11 @@ SRUM (System Resource Usage Monitor) analysis involves the examination of Window
 **Key Artifacts Revealed:**
 - **Application Usage**: Programs executed, duration, and frequency
 - **Network Statistics**: Bytes sent/received, connection durations
-- **Energy Data**: Power consumption, battery levels, and charging events
-- **User Sessions**: Login/logout times and session durations
-- **Resource Utilization**: CPU, memory, and disk usage patterns
-- **Network Interfaces**: Active network adapters and their usage
-- **Application Performance**: Response times and resource consumption
-- **System Events**: System startup, shutdown, and maintenance events
+- **Energy Data**: Energy use per application and battery charge levels
+- **User Attribution**: Which user account (SID) ran each application
+- **Resource Utilization**: CPU time and bytes read from and written to disk per application
+- **Network Interfaces**: Network adapters and Wi-Fi profiles used, with connection durations
+- **Push Notifications**: Notifications received per application
 
 **Forensic Value:**
 SRUM analysis provides a comprehensive view of system usage patterns, offering detailed evidence about application usage, network activity, and system behavior over time. This information is valuable for understanding user behavior, investigating system performance issues, and establishing usage patterns in forensic investigations.
@@ -353,14 +354,14 @@ SRUM analysis provides a comprehensive view of system usage patterns, offering d
 ---
 
 **Integration and Cross-Analysis:**
-The five analysis options work together to provide a comprehensive forensic picture:
-- **Memory + Registry**: Correlating running processes with registry entries
+The five analysis options complement each other:
+- **Memory + Registry**: Correlating running processes with registry entries such as UserAssist and Run keys
 - **Web + USB**: Linking web downloads with USB device connections
-- **SRUM + Registry**: Connecting application usage with system configuration
-- **Timeline Reconstruction**: Creating unified timelines across all analysis types
+- **SRUM + Registry**: Connecting application usage with users and network profiles
+- **Timeline Reconstruction**: Placing events from all sources on one timeline
 - **Evidence Correlation**: Cross-referencing findings for stronger conclusions
 
-This multi-faceted approach ensures that no digital evidence is overlooked and provides investigators with the most complete picture possible of system activity and user behavior.
+In Anubis, correlation is currently automated for memory findings (process, parent and child processes, network contacts, dumped files and VirusTotal verdicts). Correlation across all five options and a unified timeline are planned work, described in Chapter 5.
 
 ## 🔌 Backend API Integration
 
@@ -654,1257 +655,375 @@ For support and questions:
 
 ### 4.1 Software Development Platform
 
-The Anubis Forensics GUI was developed using a modern, robust technology stack designed for professional digital forensics applications:
-
 #### **Development Environment**
-- **IDE**: Visual Studio Code with Python extensions
-- **Version Control**: Git with GitHub for collaborative development
-- **Operating System**: Windows 10/11 (primary target platform)
-- **Python Environment**: Virtual environment management with pip
+- **Operating system**: Windows 11 (the target platform; registry, SRUM, USB and remote acquisition rely on Windows mechanisms)
+- **Language runtime**: Python 3.14 in a project-local virtual environment (`.venv`), created automatically by `run.bat` / `run.ps1`
+- **Version control**: Git, hosted on GitHub
+- **Test hardware**: Windows 11 laptop with 16 GB RAM and an NVIDIA GeForce RTX 3050 Ti Laptop GPU (4 GB)
+- **Target lab**: Windows virtual machines for remote acquisition tests **[fill in: hypervisor and guest versions used]**
 
 #### **Core Technologies**
-- **Python 3.8+**: Primary programming language for cross-platform compatibility
-- **PyQt5**: Modern GUI framework for professional desktop applications
-- **SQLite**: Lightweight database for local case management
-- **JSON**: Data serialization for case metadata and evidence storage
-- **HTTP/HTTPS**: API communication protocols for backend integration
+
+| Area | Technology | Used for |
+|------|-----------|----------|
+| User interface | PyQt5 5.15, PyQtWebEngine | Desktop GUI, embedded HTML reports |
+| Case storage | JSON files in a folder per case | `info.json`, evidence descriptors, analysis output |
+| Memory forensics | Volatility 3 (run as `vol -r json`) | `windows.info`, `pslist`, `cmdline`, `netscan`, `malfind`, `userassist`, `dumpfiles` |
+| Registry forensics | regipy | Plugin analysis, hive comparison, transaction logs, header parsing |
+| SRUM | dissect.esedb | Parsing the ESE database `SRUDB.dat` in pure Python |
+| Browser forensics | Python `sqlite3` (read-only, immutable mode) | Chromium and Firefox databases |
+| Reports | mistune, Qt `QPdfWriter` | Markdown to HTML and PDF |
+| Threat intelligence | VirusTotal API v3 (`requests`) | File-hash and IP reputation |
+| AI narrative | Any OpenAI-compatible chat API (`requests`) | Executive summary, relationships, recommendations |
 
 #### **Forensic Tools Integration**
-- **PSTools Suite**: Windows system administration and remote execution
-- **WinPmem**: Memory acquisition and analysis
-- **ProcDump**: Process memory dumping capabilities
-- **FileBrowser**: Web-based file system browser for remote access
+- **PsExec (Sysinternals)**: remote command execution on the target
+- **SMB administrative share (`\\host\C$`)**: copying tools to the target and evidence back
+- **WinPmem (`winpmem_mini_x64_rc2.exe`)**: full physical memory acquisition
+- **ProcDump**: per-process memory dumps
+- **RawCopy**: copying files that Windows keeps locked (registry hives, `SRUDB.dat`, event logs)
+- **FileBrowser**: temporary web file browser deployed on the target for manual file selection
+- **rla.exe**: fallback for applying registry transaction logs
 
-#### **AI/ML Integration**
-- **OpenAI GPT API**: Large Language Model integration for automated report generation
-- **Natural Language Processing**: Automated case analysis and documentation
-- **Intelligent Insights**: AI-powered evidence correlation and timeline analysis
+#### **AI Integration**
+The report narrative is produced by any service that implements the OpenAI-compatible `/chat/completions` endpoint. The provider is chosen in `.env` with `LLM_API_BASE`, `LLM_MODEL` and `LLM_API_KEY`, so no code change is needed to switch between a cloud service and a local model. The configuration tested for this project is **`gemma4:31b` on Ollama Cloud**. Local execution through Ollama on the investigator's own GPU is also supported, which keeps evidence on the workstation.
 
-#### **Forensic Analysis Engines**
-- **Memory Analysis Engine**: Volatility framework integration for memory forensics
-- **Registry Analysis Engine**: Windows Registry parsing and analysis
-- **SRUM Analysis Engine**: System Resource Usage Monitor data extraction
-- **USB Analysis Engine**: USB device artifact collection and timeline analysis
-- **Web Artifact Engine**: Browser history, cookies, and bookmarks analysis
+The first prototype used llama-index, sentence-transformers and PyTorch for a retrieval pipeline and had an API key written into the source code. That stack no longer installed on current Python versions, prevented the application from starting, and exposed a secret, so it was replaced by the design described in section 4.2.
 
 ### 4.2 Code Design
 
-#### **Programming Language and Architecture**
+#### **Architecture**
 
-**Primary Language**: Python 3.8+
-- **Rationale**: Cross-platform compatibility, extensive forensic libraries, rapid development
-- **Type Safety**: Type hints throughout codebase for maintainability
-- **Async Support**: Asynchronous programming for non-blocking operations
+The application is split into three layers. Each layer only depends on the one below it.
 
-#### **Key Design Patterns**
-
-**Model-View-Controller (MVC) Architecture**:
-```python
-# Model: Data representation
-class Case:
-    def __init__(self, number: str, name: str, description: str):
-        self.number = number
-        self.name = name
-        self.description = description
-
-# View: UI components
-class CaseCreationPage(BasePage):
-    def setup_ui(self):
-        self.case_number_input = self.create_styled_input("Case Number")
-        self.case_name_input = self.create_styled_input("Case Name")
-
-# Controller: Business logic
-class CaseService:
-    async def create_case(self, case_data: dict) -> Case:
-        # Business logic implementation
-        pass
+```
+pages/      PyQt5 user interface: one class per screen, background work in QThread workers
+services/   Forensic logic: acquisition, parsing, correlation, reporting (no widgets)
+utils/      Paths of bundled tools and case folders, logging, helper processes
 ```
 
-**Service Layer Pattern**:
-```python
-class APIClient:
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url
-        self.api_key = api_key
-    
-    async def create_case(self, case_data: dict) -> APIResponse:
-        # API communication logic
-        pass
+| Module | Responsibility |
+|--------|----------------|
+| `pages/main_window.py` | Navigation between screens and the single "current case" shared by all pages |
+| `pages/remote_acquisition_page.py` | Connects to a target: reachability check, SMB share, deploys FileBrowser through PsExec |
+| `pages/remote_connection_page.py` | Targeted collection, file browser, memory dumps, evidence table |
+| `pages/analysis_page.py` | The five analysis views: MEMORY, WEB, SRUM, REGISTRY, USB |
+| `pages/report_page.py` | Report generation and export to Markdown, HTML and PDF |
+| `services/memory_analyzer.py` | Volatility pipeline, file dumping and hashing, VirusTotal client |
+| `services/web_artifact_extractor.py` | Browser artifact extraction and HTML report |
+| `services/srum_analyzer.py` | SRUM parsing with ID, SID and Wi-Fi profile resolution |
+| `services/registry_analyzer.py` | Hive acquisition, regipy plugins, hive diff, transaction logs, header |
+| `services/usb_analyzer.py` | USB history from the live registry or an acquired `SYSTEM` hive, triage rules |
+| `services/report_service.py` | Rule-based findings and Markdown report, optional LLM narrative |
+| `services/evidence_store.py` | Evidence descriptors with path, size, SHA-256 and timestamp |
+| `utils/paths.py` | Absolute locations of every bundled tool and of the case sub-folders |
+
+#### **Key Design Decisions**
+
+**1. Every case is a self-contained folder.** Creating a case builds this structure, and every feature writes its output into it:
+
+```
+cases/<number>_<name>/
+├── info.json            case number, name, examiner, notes
+├── evidence/            evidence_<n>.json descriptors (+ acquired files)
+├── memory_analysis/     Volatility JSON, dumped files, VirusTotal results
+├── web_artifacts/       one time-stamped folder per extraction
+├── registry_analysis/   acquired hives, plugin results, comparisons
+├── srum_analysis/       one CSV per SRUM table
+├── usb_analysis/        device list and HTML triage report
+└── reports/             generated forensic reports
 ```
 
-**Factory Pattern for Evidence Types**:
+**2. Evidence is recorded, not just copied.** Each acquisition or analysis calls `record_evidence()`, which writes a numbered descriptor with the file paths, sizes, SHA-256 hashes and a timestamp. The evidence table and the report appendix are built from these descriptors.
+
+**3. Long operations never block the interface.** Acquisition, analysis, VirusTotal look-ups and report generation run in `QThread` workers that report progress through Qt signals. Each registry operation creates its own analyzer object inside its thread. An earlier version shared one object between threads and connected and disconnected its signals from the worker; PyQt5 then terminated the whole application without an error message (see section 4.3).
+
+**4. External tools run as separate processes.** Volatility is executed as `vol -r json` rather than imported, so a crashing plugin cannot take the GUI down, and its JSON output is parsed and flattened:
+
 ```python
-class EvidenceFactory:
-    @staticmethod
-    def create_evidence(evidence_type: str, **kwargs) -> Evidence:
-        if evidence_type == "memory":
-            return MemoryEvidence(**kwargs)
-        elif evidence_type == "file":
-            return FileEvidence(**kwargs)
-        # Additional evidence types
+def run_plugin(self, plugin: str, extra_args: list[str] | None = None, timeout: int = 3600) -> list:
+    command = [self.vol, "-q", "-r", "json", "-f", self.dump_path, plugin, *(extra_args or [])]
+    self.progress(f"Running {plugin} ...")
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            creationflags=NO_WINDOW, timeout=timeout)
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError(f"{plugin} failed (exit {result.returncode}): {' | '.join(tail)}")
+    text = result.stdout.strip()
+    start = text.find("[")
+    if start == -1:
+        return []
+    return flatten_volatility(json.loads(text[start:]))
 ```
 
-#### **Critical Code Components**
+**5. Facts come from rules; the LLM only writes prose.** `ReportService.build_findings()` correlates malfind regions, the process tree, network connections and VirusTotal results into structured findings, and all tables in the report are rendered from those findings. The LLM receives only the findings as JSON and is asked to return three Markdown text fields. It is instructed never to invent PIDs, hashes or IP addresses. If no key is configured, or the call fails, the rule-based text is used and the report states that the LLM narrative was unavailable.
 
-**1. Remote Acquisition Engine**:
 ```python
-class RemoteAcquisitionService:
-    async def establish_connection(self, target_ip: str, credentials: dict) -> bool:
-        """Establish secure remote connection using PSTools"""
-        try:
-            # PsExec connection logic
-            command = f'psexec \\\\{target_ip} -u {credentials["username"]} -p {credentials["password"]} cmd'
-            # Implementation details
-            return True
-        except Exception as e:
-            logger.error(f"Connection failed: {e}")
-            return False
+response = requests.post(
+    f"{self.llm_api_base}/chat/completions",
+    headers={"Authorization": f"Bearer {self.llm_api_key}", "Content-Type": "application/json"},
+    json={
+        "model": self.llm_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 1500,
+    },
+    timeout=config.api.timeout * 3,
+)
 ```
 
-**2. Memory Acquisition Module**:
-```python
-class MemoryAcquisitionService:
-    def acquire_memory_dump(self, target_path: str) -> str:
-        """Acquire memory dump using WinPmem"""
-        try:
-            # WinPmem execution
-            result = subprocess.run([
-                'winpmem_mini_x64_rc2.exe',
-                '-o', target_path,
-                '--format', 'raw'
-            ], capture_output=True, text=True)
-            return target_path
-        except Exception as e:
-            logger.error(f"Memory acquisition failed: {e}")
-            raise
-```
+**6. Secrets live outside the code.** API keys are read from a git-ignored `.env` file. Passwords for remote targets are never written to disk; only the IP address, domain and user name of the last connection are remembered.
 
-**3. LLM Integration for Report Generation**:
-```python
-class LLMReportGenerator:
-    def __init__(self, api_key: str):
-        self.client = OpenAI(api_key=api_key)
-    
-    async def generate_case_report(self, case_data: dict, evidence_data: list) -> str:
-        """Generate comprehensive case report using LLM"""
-        prompt = self._build_report_prompt(case_data, evidence_data)
-        response = await self.client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000
-        )
-        return response.choices[0].message.content
-```
+**7. Evidence databases are opened read-only.** Browser databases are first copied and then opened with SQLite's `mode=ro&immutable=1`, so neither the original nor the working copy is modified.
 
-#### **Forensic Analysis Engines Implementation**
+#### **How Each Analysis Option Is Implemented**
 
-**1. Memory Analysis Engine**:
-```python
-class MemoryAnalysisEngine:
-    def __init__(self, memory_dump_path: str):
-        self.memory_dump = memory_dump_path
-        self.volatility_profile = self._detect_profile()
-    
-    def analyze_processes(self) -> List[Process]:
-        """Extract running processes from memory dump"""
-        try:
-            # Volatility pslist command
-            result = subprocess.run([
-                'volatility', '-f', self.memory_dump,
-                '--profile', self.volatility_profile, 'pslist'
-            ], capture_output=True, text=True)
-            return self._parse_process_list(result.stdout)
-        except Exception as e:
-            logger.error(f"Process analysis failed: {e}")
-            return []
-    
-    def analyze_network_connections(self) -> List[NetworkConnection]:
-        """Extract network connections from memory"""
-        try:
-            # Volatility netscan command
-            result = subprocess.run([
-                'volatility', '-f', self.memory_dump,
-                '--profile', self.volatility_profile, 'netscan'
-            ], capture_output=True, text=True)
-            return self._parse_network_connections(result.stdout)
-        except Exception as e:
-            logger.error(f"Network analysis failed: {e}")
-            return []
-    
-    def extract_strings(self) -> List[str]:
-        """Extract strings from memory dump"""
-        try:
-            # Volatility strings command
-            result = subprocess.run([
-                'volatility', '-f', self.memory_dump,
-                '--profile', self.volatility_profile, 'strings'
-            ], capture_output=True, text=True)
-            return result.stdout.split('\n')
-        except Exception as e:
-            logger.error(f"String extraction failed: {e}")
-            return []
-```
+The background, purpose and forensic value of each option are explained in the section "Five Forensic Analysis Options" near the top of this document. This section describes what Anubis actually does.
 
-**2. Registry Analysis Engine**:
-```python
-class RegistryAnalysisEngine:
-    def __init__(self, registry_hives: List[str]):
-        self.registry_hives = registry_hives
-    
-    def analyze_user_assist(self) -> List[UserAssistEntry]:
-        """Analyze UserAssist registry keys for program execution history"""
-        try:
-            user_assist_data = []
-            for hive in self.registry_hives:
-                # Parse UserAssist keys
-                result = subprocess.run([
-                    'reg', 'query', f'{hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist'
-                ], capture_output=True, text=True)
-                user_assist_data.extend(self._parse_user_assist(result.stdout))
-            return user_assist_data
-        except Exception as e:
-            logger.error(f"UserAssist analysis failed: {e}")
-            return []
-    
-    def analyze_run_keys(self) -> List[RunKeyEntry]:
-        """Analyze Run keys for startup programs"""
-        try:
-            run_keys = []
-            run_locations = [
-                r'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                r'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                r'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
-                r'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
-            ]
-            
-            for location in run_locations:
-                result = subprocess.run([
-                    'reg', 'query', location
-                ], capture_output=True, text=True)
-                run_keys.extend(self._parse_run_keys(result.stdout))
-            return run_keys
-        except Exception as e:
-            logger.error(f"Run keys analysis failed: {e}")
-            return []
-    
-    def analyze_usb_devices(self) -> List[USBDevice]:
-        """Analyze USB device registry entries"""
-        try:
-            usb_devices = []
-            usb_locations = [
-                r'HKLM\SYSTEM\CurrentControlSet\Enum\USB',
-                r'HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR'
-            ]
-            
-            for location in usb_locations:
-                result = subprocess.run([
-                    'reg', 'query', location, '/s'
-                ], capture_output=True, text=True)
-                usb_devices.extend(self._parse_usb_devices(result.stdout))
-            return usb_devices
-        except Exception as e:
-            logger.error(f"USB registry analysis failed: {e}")
-            return []
-```
+**1. Memory analysis** (`services/memory_analyzer.py`)
+1. The investigator selects a memory image (`.raw`, `.mem`, `.dmp`, `.vmem` and others). Remote full-memory images acquired with WinPmem are stored in the case's `evidence` folder.
+2. Six Volatility 3 plugins run in sequence: `windows.info`, `windows.pslist`, `windows.cmdline`, `windows.netscan`, `windows.malfind` and `windows.registry.userassist`. A failing plugin is logged and the pipeline continues.
+3. Netscan output is grouped per owning process, and every remote address is classified as public, private or local.
+4. A process is marked suspicious when malfind reports an executable and writable region (`PAGE_EXECUTE_READWRITE` or `PAGE_EXECUTE_WRITECOPY`) that contains an MZ header or is private memory.
+5. `windows.dumpfiles` extracts the files mapped by each suspicious process, and each file is hashed with MD5 and SHA-256.
+6. With a VirusTotal key, the hashes of up to 8 dumped files, and the public IP addresses contacted by suspicious processes, are looked up. Only hashes and addresses are sent; files are never uploaded. The "Check files on VirusTotal" and "Check IPs on VirusTotal" buttons repeat these look-ups for an existing case.
+7. Eleven views show the results: VirusTotal files, filtered netscan with IP classification, VirusTotal IPs, malfind with hex dump and disassembly, pslist, netscan, userassist, wininfo, cmdline, dumped files, and public IP strings carved from the dumped files.
 
-**3. SRUM Analysis Engine**:
-```python
-class SRUMAnalysisEngine:
-    def __init__(self, srum_database_path: str):
-        self.srum_db = srum_database_path
-    
-    def analyze_application_usage(self) -> List[ApplicationUsage]:
-        """Analyze application usage data from SRUM"""
-        try:
-            # Query SRUM database for application usage
-            query = """
-            SELECT 
-                ApplicationId,
-                TimeStamp,
-                Duration,
-                UserId
-            FROM ApplicationResourceUsage
-            ORDER BY TimeStamp DESC
-            """
-            
-            result = self._execute_srum_query(query)
-            return self._parse_application_usage(result)
-        except Exception as e:
-            logger.error(f"SRUM application usage analysis failed: {e}")
-            return []
-    
-    def analyze_network_usage(self) -> List[NetworkUsage]:
-        """Analyze network usage data from SRUM"""
-        try:
-            # Query SRUM database for network usage
-            query = """
-            SELECT 
-                InterfaceLuid,
-                TimeStamp,
-                BytesSent,
-                BytesReceived
-            FROM NetworkDataUsage
-            ORDER BY TimeStamp DESC
-            """
-            
-            result = self._execute_srum_query(query)
-            return self._parse_network_usage(result)
-        except Exception as e:
-            logger.error(f"SRUM network usage analysis failed: {e}")
-            return []
-    
-    def analyze_energy_usage(self) -> List[EnergyUsage]:
-        """Analyze energy usage data from SRUM"""
-        try:
-            # Query SRUM database for energy usage
-            query = """
-            SELECT 
-                TimeStamp,
-                EnergyConsumption,
-                BatteryLevel
-            FROM EnergyUsage
-            ORDER BY TimeStamp DESC
-            """
-            
-            result = self._execute_srum_query(query)
-            return self._parse_energy_usage(result)
-        except Exception as e:
-            logger.error(f"SRUM energy usage analysis failed: {e}")
-            return []
-```
+**2. Web artifact analysis** (`services/web_artifact_extractor.py`)
+- **Sources**: a remote host through the `C$` share, the examiner's own profile, any profile folder, or any Windows user folder (for example an acquired copy).
+- **Browsers**: Edge, Chrome, Brave, Opera (Chromium family) and Firefox.
+- **Artifacts**: history (500 most recent), downloads, search terms, cookies (metadata only, values are not extracted), saved login sites and user names (passwords are not decrypted), bookmarks.
+- On a remote host, running browsers are closed through PsExec first so that their databases are not locked.
+- **Output**: an HTML report shown inside the application, a `summary.json` with counts, and the raw database copies.
 
-**4. USB Analysis Engine**:
-```python
-class USBAnalysisEngine:
-    def __init__(self):
-        self.usb_artifacts = []
-    
-    def analyze_usb_devices(self) -> List[USBDevice]:
-        """Analyze USB device artifacts from multiple sources"""
-        try:
-            usb_devices = []
-            
-            # Analyze USB registry entries
-            registry_devices = self._analyze_usb_registry()
-            usb_devices.extend(registry_devices)
-            
-            # Analyze USB setupapi logs
-            setupapi_devices = self._analyze_setupapi_logs()
-            usb_devices.extend(setupapi_devices)
-            
-            # Analyze USB event logs
-            event_log_devices = self._analyze_usb_event_logs()
-            usb_devices.extend(event_log_devices)
-            
-            return usb_devices
-        except Exception as e:
-            logger.error(f"USB analysis failed: {e}")
-            return []
-    
-    def analyze_usb_timeline(self) -> List[USBTimelineEntry]:
-        """Create timeline of USB device usage"""
-        try:
-            timeline = []
-            
-            # Get device insertion/removal events
-            events = self._get_usb_events()
-            
-            for event in events:
-                timeline_entry = USBTimelineEntry(
-                    timestamp=event.timestamp,
-                    device_id=event.device_id,
-                    event_type=event.event_type,
-                    description=event.description
-                )
-                timeline.append(timeline_entry)
-            
-            return sorted(timeline, key=lambda x: x.timestamp)
-        except Exception as e:
-            logger.error(f"USB timeline analysis failed: {e}")
-            return []
-    
-    def extract_usb_metadata(self, device_id: str) -> USBDeviceMetadata:
-        """Extract detailed metadata for specific USB device"""
-        try:
-            metadata = USBDeviceMetadata()
-            
-            # Get device information
-            metadata.vendor_id = self._get_vendor_id(device_id)
-            metadata.product_id = self._get_product_id(device_id)
-            metadata.serial_number = self._get_serial_number(device_id)
-            metadata.first_seen = self._get_first_seen(device_id)
-            metadata.last_seen = self._get_last_seen(device_id)
-            metadata.usage_count = self._get_usage_count(device_id)
-            
-            return metadata
-        except Exception as e:
-            logger.error(f"USB metadata extraction failed: {e}")
-            return None
-```
+**3. Registry analysis** (`services/registry_analyzer.py`)
+- **Acquire**: copies locked hives of the local machine (`SYSTEM`, `SOFTWARE`, `SAM`, `SECURITY`, `Amcache.hve`, `SRUDB.dat`, and per-user `NTUSER.DAT` and `UsrClass.dat` with their `.LOG1`/`.LOG2` files) with RawCopy. This requires Administrator rights.
+- **Analyze**: runs every regipy plugin that matches the hive type and saves the results as JSON.
+- **Compare**: lists keys and values that were added, removed or modified between two hives and saves a CSV.
+- **Apply transaction logs**: replays `.LOG1`/`.LOG2` into a recovered copy of the hive.
+- **Parse header**: shows signature, sequence numbers, timestamps and whether the hive is dirty.
 
-**5. Web Artifact Analysis Engine**:
-```python
-class WebArtifactAnalysisEngine:
-    def __init__(self, browser_profiles: List[str]):
-        self.browser_profiles = browser_profiles
-    
-    def analyze_browser_history(self) -> List[BrowserHistoryEntry]:
-        """Analyze browser history from multiple browsers"""
-        try:
-            history_entries = []
-            
-            for profile in self.browser_profiles:
-                if 'chrome' in profile.lower():
-                    chrome_history = self._analyze_chrome_history(profile)
-                    history_entries.extend(chrome_history)
-                elif 'firefox' in profile.lower():
-                    firefox_history = self._analyze_firefox_history(profile)
-                    history_entries.extend(firefox_history)
-                elif 'edge' in profile.lower():
-                    edge_history = self._analyze_edge_history(profile)
-                    history_entries.extend(edge_history)
-            
-            return sorted(history_entries, key=lambda x: x.timestamp, reverse=True)
-        except Exception as e:
-            logger.error(f"Browser history analysis failed: {e}")
-            return []
-    
-    def analyze_browser_cookies(self) -> List[BrowserCookie]:
-        """Analyze browser cookies from multiple browsers"""
-        try:
-            cookies = []
-            
-            for profile in self.browser_profiles:
-                if 'chrome' in profile.lower():
-                    chrome_cookies = self._analyze_chrome_cookies(profile)
-                    cookies.extend(chrome_cookies)
-                elif 'firefox' in profile.lower():
-                    firefox_cookies = self._analyze_firefox_cookies(profile)
-                    cookies.extend(firefox_cookies)
-                elif 'edge' in profile.lower():
-                    edge_cookies = self._analyze_edge_cookies(profile)
-                    cookies.extend(edge_cookies)
-            
-            return cookies
-        except Exception as e:
-            logger.error(f"Browser cookie analysis failed: {e}")
-            return []
-    
-    def analyze_browser_bookmarks(self) -> List[BrowserBookmark]:
-        """Analyze browser bookmarks from multiple browsers"""
-        try:
-            bookmarks = []
-            
-            for profile in self.browser_profiles:
-                if 'chrome' in profile.lower():
-                    chrome_bookmarks = self._analyze_chrome_bookmarks(profile)
-                    bookmarks.extend(chrome_bookmarks)
-                elif 'firefox' in profile.lower():
-                    firefox_bookmarks = self._analyze_firefox_bookmarks(profile)
-                    bookmarks.extend(firefox_bookmarks)
-                elif 'edge' in profile.lower():
-                    edge_bookmarks = self._analyze_edge_bookmarks(profile)
-                    bookmarks.extend(edge_bookmarks)
-            
-            return bookmarks
-        except Exception as e:
-            logger.error(f"Browser bookmark analysis failed: {e}")
-            return []
-    
-    def generate_web_timeline(self) -> List[WebTimelineEntry]:
-        """Generate comprehensive web activity timeline"""
-        try:
-            timeline = []
-            
-            # Add history entries
-            history_entries = self.analyze_browser_history()
-            for entry in history_entries:
-                timeline_entry = WebTimelineEntry(
-                    timestamp=entry.timestamp,
-                    activity_type="browsing",
-                    url=entry.url,
-                    title=entry.title,
-                    browser=entry.browser
-                )
-                timeline.append(timeline_entry)
-            
-            # Add cookie entries
-            cookies = self.analyze_browser_cookies()
-            for cookie in cookies:
-                timeline_entry = WebTimelineEntry(
-                    timestamp=cookie.timestamp,
-                    activity_type="cookie",
-                    domain=cookie.domain,
-                    name=cookie.name,
-                    browser=cookie.browser
-                )
-                timeline.append(timeline_entry)
-            
-            return sorted(timeline, key=lambda x: x.timestamp, reverse=True)
-        except Exception as e:
-            logger.error(f"Web timeline generation failed: {e}")
-            return []
-```
+**4. USB analysis** (`services/usb_analyzer.py`)
+- **Sources**: the live registry of the examiner's machine, or an acquired `SYSTEM` hive (offline evidence). For a hive, the active control set is read from `Select\Current`.
+- **Data per device**: description, device type from the class GUID, serial number, hardware ID, manufacturer, driver, and the first install, last arrival and last removal times from the device property keys.
+- **Triage**: storage devices are flagged when they were connected in the last 7 days, have a generic or unknown manufacturer, were removed after their last arrival, or share a serial number with another device ID.
+- **Output**: a searchable table, CSV export, and an HTML forensic report stored in the case.
 
-#### **Detailed Analysis Options Explanations**
+**5. SRUM analysis** (`services/srum_analyzer.py`)
+- `SRUDB.dat` is an ESE (Extensible Storage Engine) database, not SQLite. It is parsed with `dissect.esedb`.
+- Every table is read, including application resource usage, network data usage, network connectivity, energy usage, push notifications and application timeline. Table GUIDs are translated to readable names.
+- Application and user IDs are resolved through `SruDbIdMapTable`. With the `SOFTWARE` hive of the same machine, SIDs are resolved to user names and Wi-Fi profile IDs to network names.
+- The live database is locked by Windows, so it is acquired first with RawCopy ("Acquire from this machine") or taken from evidence collected remotely.
+- **Output**: one tab per table with search, and one CSV per table in the case.
 
-**1. Memory Analysis (RAM Forensics)**
-
-**What is Memory Analysis?**
-Memory analysis, also known as RAM forensics or volatile memory forensics, involves the examination of a computer's random access memory (RAM) to extract digital evidence that exists only in volatile memory and is lost when the system is powered off.
-
-**Why is Memory Analysis Important?**
-- **Volatile Evidence**: Captures evidence that disappears when the system is shut down
-- **Running Processes**: Reveals currently running applications and their states
-- **Network Connections**: Shows active network connections and communication
-- **Encrypted Data**: May contain decrypted data that was encrypted on disk
-- **Malware Detection**: Identifies malicious processes and injected code
-- **User Activity**: Captures user sessions, passwords, and recent activities
-
-**How Memory Analysis Works:**
-1. **Memory Acquisition**: Using tools like WinPmem to create a memory dump
-2. **Profile Detection**: Identifying the operating system version and architecture
-3. **Process Analysis**: Extracting running processes, their memory maps, and loaded modules
-4. **Network Analysis**: Identifying active network connections and listening ports
-5. **String Extraction**: Searching for meaningful text strings in memory
-6. **Artifact Recovery**: Extracting files, registry hives, and other artifacts from memory
-
-**Key Artifacts Revealed:**
-- **Running Processes**: List of all active processes with PIDs and memory addresses
-- **Network Connections**: Active TCP/UDP connections and associated processes
-- **Loaded DLLs**: Dynamic link libraries loaded by processes
-- **Command History**: Recently executed commands and command line arguments
-- **Encryption Keys**: Cryptographic keys and certificates in memory
-- **Browser Data**: Passwords, cookies, and session data from web browsers
-- **Malware Artifacts**: Suspicious processes, injected code, and rootkits
-
-**Forensic Value:**
-Memory analysis provides a "snapshot" of system activity at the time of acquisition, revealing what was happening on the system when the memory dump was taken. This is crucial for incident response, malware analysis, and understanding user behavior patterns.
-
----
-
-**2. Web Artifact Analysis (Browser Forensics)**
-
-**What is Web Artifact Analysis?**
-Web artifact analysis involves the examination of web browser data to reconstruct a user's online activities, including browsing history, downloads, bookmarks, cookies, and other web-related artifacts stored by browsers.
-
-**Why is Web Artifact Analysis Important?**
-- **User Behavior**: Reveals user's online activities and interests
-- **Timeline Reconstruction**: Provides chronological evidence of web browsing
-- **Evidence Preservation**: Captures web-based evidence that may be deleted from servers
-- **Authentication Data**: Contains login credentials and session information
-- **Download History**: Shows files downloaded and their sources
-- **Search Queries**: Reveals search terms and visited websites
-
-**How Web Artifact Analysis Works:**
-1. **Browser Identification**: Locating browser profile directories
-2. **Database Extraction**: Accessing browser databases (SQLite files)
-3. **History Analysis**: Parsing browsing history and download records
-4. **Cookie Examination**: Extracting authentication and tracking cookies
-5. **Bookmark Analysis**: Recovering saved bookmarks and favorites
-6. **Cache Analysis**: Examining cached web pages and resources
-7. **Form Data**: Extracting saved form data and autofill information
-
-**Key Artifacts Revealed:**
-- **Browsing History**: URLs visited, page titles, and timestamps
-- **Download Records**: Files downloaded, sources, and completion times
-- **Cookies**: Authentication tokens, session data, and tracking information
-- **Bookmarks**: Saved websites and folder structures
-- **Search Queries**: Terms searched in various search engines
-- **Login Credentials**: Saved usernames and encrypted passwords
-- **Form Data**: Auto-filled information and saved form entries
-- **Cache Files**: Cached web pages, images, and other resources
-
-**Forensic Value:**
-Web artifacts provide a comprehensive picture of a user's online activities, including websites visited, searches performed, files downloaded, and authentication patterns. This information is crucial for investigations involving cybercrime, fraud, intellectual property theft, and general user activity analysis.
-
----
-
-**3. Registry Analysis (Windows Registry Forensics)**
-
-**What is Registry Analysis?**
-Registry analysis involves the examination of the Windows Registry, a hierarchical database that stores configuration settings and options for the Windows operating system and installed applications. The registry contains a wealth of forensic information about system activity and user behavior.
-
-**Why is Registry Analysis Important?**
-- **System Configuration**: Reveals system settings and installed software
-- **User Activity**: Tracks user actions and application usage
-- **Startup Programs**: Identifies programs that start automatically
-- **Device History**: Records connected hardware and devices
-- **Network Information**: Contains network configuration and connection history
-- **Security Settings**: Shows security policies and access controls
-- **Timeline Evidence**: Provides timestamps for various system events
-
-**How Registry Analysis Works:**
-1. **Hive Identification**: Locating registry hive files (SYSTEM, SOFTWARE, SAM, etc.)
-2. **Key Enumeration**: Navigating through registry key hierarchies
-3. **Value Extraction**: Reading registry values and their data
-4. **Timeline Analysis**: Examining timestamps associated with registry keys
-5. **Cross-Reference Analysis**: Correlating data across multiple registry locations
-6. **Deleted Key Recovery**: Attempting to recover deleted registry entries
-
-**Key Artifacts Revealed:**
-- **UserAssist Keys**: Program execution history and frequency
-- **Run Keys**: Programs configured to start automatically
-- **USB Device History**: Connected USB devices and their timestamps
-- **Network Connections**: Network adapter settings and connection history
-- **Installed Software**: List of installed applications and their versions
-- **System Information**: Hardware configuration and system details
-- **Security Settings**: Password policies and access controls
-- **Recent Documents**: Recently accessed files and applications
-- **Shell Bags**: User interface customization and folder views
-
-**Forensic Value:**
-The Windows Registry serves as a comprehensive log of system activity, providing evidence of user actions, system changes, and application behavior. Registry analysis can reveal when programs were installed, when devices were connected, and what activities occurred on the system over time.
-
----
-
-**4. USB Device Analysis (USB Forensics)**
-
-**What is USB Device Analysis?**
-USB device analysis involves the examination of artifacts related to USB device connections, including device identification, connection history, and usage patterns. This analysis helps reconstruct when USB devices were connected to a system and what activities occurred with them.
-
-**Why is USB Device Analysis Important?**
-- **Device Tracking**: Identifies USB devices that have been connected to the system
-- **Timeline Reconstruction**: Provides chronological evidence of device usage
-- **Data Transfer Evidence**: Shows when devices were connected and potentially used for data transfer
-- **Device Identification**: Reveals device types, manufacturers, and serial numbers
-- **Security Investigations**: Important for cases involving data theft or unauthorized access
-- **Compliance**: Helps verify device usage policies and compliance requirements
-
-**How USB Device Analysis Works:**
-1. **Registry Examination**: Analyzing USB-related registry keys
-2. **SetupAPI Log Analysis**: Reviewing device installation logs
-3. **Event Log Analysis**: Examining system event logs for USB events
-4. **Device Enumeration**: Identifying connected and previously connected devices
-5. **Timeline Construction**: Creating chronological timeline of device usage
-6. **Metadata Extraction**: Gathering device information and connection details
-
-**Key Artifacts Revealed:**
-- **Device Identifiers**: Vendor IDs, product IDs, and serial numbers
-- **Connection History**: When devices were first and last connected
-- **Device Types**: Storage devices, input devices, network adapters, etc.
-- **Driver Information**: Installed drivers and device drivers
-- **Mount Points**: Drive letters assigned to storage devices
-- **Usage Patterns**: Frequency and duration of device connections
-- **Device Names**: User-assigned names and device descriptions
-- **Firmware Information**: Device firmware versions and capabilities
-
-**Forensic Value:**
-USB device analysis provides crucial evidence in cases involving data theft, unauthorized access, or device usage investigations. It can help establish timelines of device usage, identify specific devices involved in incidents, and provide evidence of data transfer activities.
-
----
-
-**5. SRUM Analysis (System Resource Usage Monitor)**
-
-**What is SRUM Analysis?**
-SRUM (System Resource Usage Monitor) analysis involves the examination of Windows' built-in system monitoring database that tracks application usage, network activity, and energy consumption. SRUM provides detailed information about how system resources are used over time.
-
-**Why is SRUM Analysis Important?**
-- **Application Usage**: Reveals which applications were used and for how long
-- **Network Activity**: Tracks network usage patterns and data transfer
-- **Energy Consumption**: Shows power usage patterns and battery information
-- **User Behavior**: Provides insights into user activity patterns
-- **System Performance**: Indicates system resource utilization
-- **Timeline Evidence**: Offers detailed chronological data about system usage
-- **Compliance Monitoring**: Helps verify software usage compliance
-
-**How SRUM Analysis Works:**
-1. **Database Location**: Locating the SRUM database file (Windows\System32\sru\SRUDB.dat)
-2. **Database Access**: Using specialized tools to access the SQLite database
-3. **Query Execution**: Running SQL queries to extract usage data
-4. **Data Parsing**: Converting raw data into meaningful forensic information
-5. **Timeline Analysis**: Creating chronological usage patterns
-6. **Cross-Reference Analysis**: Correlating data with other forensic sources
-
-**Key Artifacts Revealed:**
-- **Application Usage**: Programs executed, duration, and frequency
-- **Network Statistics**: Bytes sent/received, connection durations
-- **Energy Data**: Power consumption, battery levels, and charging events
-- **User Sessions**: Login/logout times and session durations
-- **Resource Utilization**: CPU, memory, and disk usage patterns
-- **Network Interfaces**: Active network adapters and their usage
-- **Application Performance**: Response times and resource consumption
-- **System Events**: System startup, shutdown, and maintenance events
-
-**Forensic Value:**
-SRUM analysis provides a comprehensive view of system usage patterns, offering detailed evidence about application usage, network activity, and system behavior over time. This information is valuable for understanding user behavior, investigating system performance issues, and establishing usage patterns in forensic investigations.
-
----
-
-**Integration and Cross-Analysis:**
-The five analysis options work together to provide a comprehensive forensic picture:
-- **Memory + Registry**: Correlating running processes with registry entries
-- **Web + USB**: Linking web downloads with USB device connections
-- **SRUM + Registry**: Connecting application usage with system configuration
-- **Timeline Reconstruction**: Creating unified timelines across all analysis types
-- **Evidence Correlation**: Cross-referencing findings for stronger conclusions
-
-This multi-faceted approach ensures that no digital evidence is overlooked and provides investigators with the most complete picture possible of system activity and user behavior.
+**Integration and cross-analysis.** The report correlates memory findings: suspicious processes are linked to their parent and child processes, to the public IP addresses they contacted, to the files dumped from them, and to VirusTotal verdicts for those files and addresses. Correlation across the other four options (for example linking a browser download to a USB device) is not automated yet and is listed as future work in Chapter 5.
 
 ### 4.3 Verification
 
-#### **Requirements Satisfaction Analysis**
+Verification answers the question "was the system built correctly?". Each requirement was checked against the implementation and against the tests in section 4.4.
 
-**Functional Requirements Verification**:
+#### **Functional Requirements**
 
-✅ **Case Management System**
-- **Requirement**: Create, read, update, delete forensic cases
-- **Verification**: Implemented complete CRUD operations with JSON storage
-- **Status**: ✅ SATISFIED
+| Requirement | How it was verified | Status |
+|-------------|--------------------|--------|
+| Create cases and select existing ones | GUI test: case created, all seven sub-folders and `info.json` present, navigation to Resource | ✅ Satisfied |
+| Edit or delete cases from the GUI | Not implemented; cases are folders that can be managed in Explorer | ❌ Not implemented |
+| Register local evidence | Code review; evidence descriptors created with path and size | ✅ Satisfied |
+| Remote connection with clear errors | GUI test: unreachable host reports "not reachable" without hanging | ✅ Error path verified |
+| Remote acquisition (targeted locations, files, memory) | Requires a target VM | ⚠️ Not yet tested end-to-end |
+| Memory analysis with Volatility 3 | Pipeline verified to fail gracefully on an invalid image; all 11 views verified on the sample case | ⚠️ Not yet run on a real image |
+| VirusTotal enrichment | Live look-ups on the sample case (section 4.4) | ✅ Satisfied |
+| Web artifact extraction | Live extraction from Chrome and Brave on the test machine | ✅ Satisfied |
+| Registry analysis | Header, plugin analysis and comparison tested on `C:\Users\Default\NTUSER.DAT` | ✅ Satisfied |
+| Registry acquisition and transaction logs | Requires Administrator rights and dirty hives | ⚠️ Not yet tested |
+| USB analysis and triage report | Live scan of 19 devices; report saved in the case | ✅ Satisfied |
+| SRUM analysis | Input validation tested; the live database is locked without Administrator rights | ⚠️ Not yet run on a real `SRUDB.dat` |
+| Report with LLM narrative and export | GUI test: report generated with `gemma4:31b`; Markdown, HTML and PDF exported | ✅ Satisfied |
 
-✅ **Remote Acquisition Capabilities**
-- **Requirement**: Secure remote file system access and memory acquisition
-- **Verification**: PSTools integration with encrypted credential handling
-- **Status**: ✅ SATISFIED
+#### **Non-Functional Requirements**
 
-✅ **Evidence Collection and Analysis**
-- **Requirement**: Automated evidence collection from multiple sources
-- **Verification**: Web artifacts, USB analysis, memory forensics implemented
-- **Status**: ✅ SATISFIED
+| Requirement | Result |
+|-------------|--------|
+| The interface stays responsive during long work | All long operations run in background threads with progress messages |
+| No secrets in the source code | Keys only in the git-ignored `.env`; the API key previously committed was removed from the history |
+| Reproducible installation | `run.bat` / `run.ps1` create the virtual environment and install `requirements.txt` |
+| Honest reporting | Files that no engine scanned are shown as "Not checked", never as "Clean" |
 
-✅ **AI-Powered Reporting**
-- **Requirement**: Automated report generation using LLM
-- **Verification**: OpenAI GPT integration with structured report templates
-- **Status**: ✅ SATISFIED
+#### **Defects Found During Verification**
 
-✅ **Five Analysis Options Implementation**
-- **Memory Analysis**: Volatility framework integration for comprehensive memory forensics
-- **Registry Analysis**: Windows Registry parsing for system artifacts and user activity
-- **SRUM Analysis**: System Resource Usage Monitor data extraction for system behavior
-- **USB Analysis**: USB device artifact collection and timeline reconstruction
-- **Web Analysis**: Browser artifact extraction and web activity timeline
-- **Status**: ✅ SATISFIED
+Testing found and fixed these defects. They are listed because they show what the tests are for.
 
-**Non-Functional Requirements Verification**:
-
-✅ **Performance Requirements**
-- **Requirement**: Response time < 2 seconds for UI operations
-- **Verification**: Async operations with progress indicators
-- **Status**: ✅ SATISFIED
-
-✅ **Security Requirements**
-- **Requirement**: Encrypted credential storage and secure communications
-- **Verification**: Environment variable configuration and HTTPS API calls
-- **Status**: ✅ SATISFIED
-
-✅ **Usability Requirements**
-- **Requirement**: Intuitive GUI for forensic professionals
-- **Verification**: Material Design-inspired interface with clear navigation
-- **Status**: ✅ SATISFIED
+| Defect | Effect | Fix |
+|--------|--------|-----|
+| Outdated dependencies (llama-index, PyTorch) imported at start-up | The application could not start | Replaced by a dependency-light report service |
+| Shared registry analyzer used from worker threads | Any registry button closed the application silently | One analyzer per worker thread |
+| Evidence table loaded only when a case was selected | New evidence was invisible until "Refresh" | Table reloads every time the page is shown |
+| Files never scanned shown as "Clean" (0 of 0 engines) | The report, and the LLM, claimed malware was clean | Reported as "Not checked"; summary states that reputation is unknown |
+| Evidence descriptor numbering based on file count | An existing descriptor could be overwritten | Next number taken from the highest existing number |
+| Tool paths relative to the working directory | Tools not found when started from another folder | All paths resolved in `utils/paths.py` |
 
 ### 4.4 Validation
 
-#### **System Specification Compliance**
+Validation answers the question "does the system do what an investigator needs?". It was done with automated tests, an end-to-end GUI test, and a known-infected sample case.
 
-**Architecture Validation**:
-- **Specification**: Modular, extensible architecture with clear separation of concerns
-- **Validation**: MVC pattern implementation with service layer abstraction
-- **Result**: ✅ COMPLIANT
+#### **Automated Unit Tests**
 
-**API Integration Validation**:
-- **Specification**: RESTful API client with error handling and retry logic
-- **Validation**: Comprehensive API client with async/sync support
-- **Result**: ✅ COMPLIANT
+The tests run with `python -m unittest discover -v`. All 8 tests pass.
 
-**Data Model Validation**:
-- **Specification**: Type-safe data models with validation
-- **Validation**: Dataclass implementation with type hints
-- **Result**: ✅ COMPLIANT
+| Test file | What it checks |
+|-----------|---------------|
+| `tests/test_config.py` | Data, log and case paths are project-relative; the case folder structure is created; the main window fits small and large screens |
+| `tests/test_virustotal_files.py` | Selection of dumped files for VirusTotal skips JSON, empty files and duplicate hashes, orders by importance and respects the lookup limit; results are saved most-detected first (uses a fake client, no network) |
 
-**Forensic Analysis Validation**:
-- **Specification**: Five comprehensive analysis engines for different artifact types
-- **Validation**: Memory, Registry, SRUM, USB, and Web analysis engines implemented
-- **Result**: ✅ COMPLIANT
+#### **End-to-End GUI Test**
 
-#### **Test Scenarios**
+A scripted run of the real application on a temporary case. Pop-up messages are recorded and closed automatically, and file dialogs receive pre-set answers. All 18 checks passed.
 
-**Simple Test Scenarios**:
+| Step | Check | Result |
+|------|-------|--------|
+| 1 | Home page shown | Pass |
+| 2 | Case created with all folders and `info.json` | Pass |
+| 3 | Navigation to Resource after creation | Pass |
+| 4 | Connection to an unreachable host fails with a clear message | Pass |
+| 5 | Remote connection page shows the host details | Pass |
+| 6 | Memory view reads from the case folder | Pass |
+| 7 | All 11 memory views render | Pass |
+| 8 | Web extraction from this machine saved in the case | Pass |
+| 9 | USB scan lists devices | Pass |
+| 10 | USB forensic report saved in the case | Pass |
+| 11 | Registry header parsed in the background | Pass |
+| 12 | SRUM rejects a missing file with a message | Pass |
+| 13 | Report generated with the LLM narrative | Pass |
+| 14 | Report saved in the case | Pass |
+| 15–17 | Export to Markdown, HTML and PDF | Pass |
+| 18 | Evidence table lists everything recorded | Pass |
 
-1. **Case Creation Test**
-   ```python
-   def test_case_creation():
-       case_data = {"number": "TEST-001", "name": "Test Case"}
-       case = CaseService().create_case(case_data)
-       assert case.number == "TEST-001"
-       assert case.name == "Test Case"
-   ```
+#### **Validation on a Known-Infected Sample Case**
 
-2. **Local Evidence Collection Test**
-   ```python
-   def test_local_evidence_collection():
-       evidence = LocalEvidenceService().collect_system_info()
-       assert evidence is not None
-       assert "system_info" in evidence
-   ```
+Case `22_ezz` contains Volatility output from a Windows 10 memory image of an infected machine. Anubis was used on it as an investigator would, and its conclusions were checked against VirusTotal.
 
-3. **UI Navigation Test**
-   ```python
-   def test_ui_navigation():
-       main_window = MainWindow()
-       main_window.show_home_page()
-       assert main_window.current_page == "home"
-   ```
+| Finding by Anubis | Independent check |
+|-------------------|-------------------|
+| Malfind flags `oneetx.exe` (PID 5896, parent 8844, child 7732): executable and writable region with an MZ header | Dumped image of `oneetx.exe`: **37 of 71** VirusTotal engines detect it, label `trojan.cryp/mars` (Mars Stealer) |
+| `oneetx.exe` connected to `77.91.124.20:80` | VirusTotal: **16** engines rate the IP malicious; hosted in Germany |
+| Malfind also flags `smartscreen.exe` (PID 7540), without an MZ header | Only small data files were dumped from it, and they were not sent to VirusTotal. Without an MZ header this region is most likely benign generated code: the tool flags it and the analyst must judge |
+| Six DLLs and one other image mapped by `oneetx.exe` (for example `winhttp.dll`, `IPHLPAPI.DLL`) | All seven are clean on VirusTotal: legitimate Windows libraries loaded by the malware |
 
-4. **Memory Analysis Test**
-   ```python
-   def test_memory_analysis():
-       memory_engine = MemoryAnalysisEngine("test_memory.dmp")
-       processes = memory_engine.analyze_processes()
-       assert len(processes) > 0
-       assert all(hasattr(p, 'pid') for p in processes)
-   ```
-
-5. **Registry Analysis Test**
-   ```python
-   def test_registry_analysis():
-       registry_engine = RegistryAnalysisEngine(["HKLM", "HKCU"])
-       run_keys = registry_engine.analyze_run_keys()
-       assert isinstance(run_keys, list)
-   ```
-
-**Complex Test Scenarios**:
-
-1. **End-to-End Remote Acquisition Test**
-   ```python
-   async def test_remote_acquisition_workflow():
-       # 1. Establish remote connection
-       connection = await RemoteService().connect(target_ip, credentials)
-       assert connection.is_connected
-       
-       # 2. Deploy file browser
-       browser = await connection.deploy_file_browser()
-       assert browser.is_running
-       
-       # 3. Acquire memory dump
-       memory_dump = await connection.acquire_memory()
-       assert os.path.exists(memory_dump)
-       
-       # 4. Cleanup
-       await connection.cleanup()
-       assert not connection.is_connected
-   ```
-
-2. **Multi-Evidence Analysis Test**
-   ```python
-   async def test_multi_evidence_analysis():
-       # 1. Collect web artifacts
-       web_artifacts = await WebArtifactService().extract_artifacts()
-       
-       # 2. Collect USB artifacts
-       usb_artifacts = await USBAnalyzer().analyze_devices()
-       
-       # 3. Generate comprehensive report
-       report = await LLMReportGenerator().generate_report(
-           web_artifacts, usb_artifacts
-       )
-       
-       assert "web_artifacts" in report
-       assert "usb_analysis" in report
-   ```
-
-3. **Five Analysis Options Integration Test**
-   ```python
-   async def test_five_analysis_options():
-       # 1. Memory Analysis
-       memory_engine = MemoryAnalysisEngine("memory.dmp")
-       memory_results = memory_engine.analyze_processes()
-       assert len(memory_results) > 0
-       
-       # 2. Registry Analysis
-       registry_engine = RegistryAnalysisEngine(["HKLM", "HKCU"])
-       registry_results = registry_engine.analyze_user_assist()
-       assert isinstance(registry_results, list)
-       
-       # 3. SRUM Analysis
-       srum_engine = SRUMAnalysisEngine("srum.db")
-       srum_results = srum_engine.analyze_application_usage()
-       assert isinstance(srum_results, list)
-       
-       # 4. USB Analysis
-       usb_engine = USBAnalysisEngine()
-       usb_results = usb_engine.analyze_usb_devices()
-       assert isinstance(usb_results, list)
-       
-       # 5. Web Analysis
-       web_engine = WebArtifactAnalysisEngine(["chrome", "firefox"])
-       web_results = web_engine.analyze_browser_history()
-       assert isinstance(web_results, list)
-       
-       # 6. Generate comprehensive report
-       report = await LLMReportGenerator().generate_comprehensive_report(
-           memory_results, registry_results, srum_results, 
-           usb_results, web_results
-       )
-       assert "memory_analysis" in report
-       assert "registry_analysis" in report
-       assert "srum_analysis" in report
-       assert "usb_analysis" in report
-       assert "web_analysis" in report
-   ```
-
-4. **Performance Under Load Test**
-   ```python
-   async def test_performance_under_load():
-       # Simulate multiple concurrent operations
-       tasks = []
-       for i in range(10):
-           task = asyncio.create_task(
-               CaseService().create_case({"number": f"CASE-{i}"})
-           )
-           tasks.append(task)
-       
-       results = await asyncio.gather(*tasks)
-       assert len(results) == 10
-       assert all(result.success for result in results)
-   ```
+The report produced by Anubis identified the Mars Stealer infection, the malicious process, its network contact and its hash, and recommended isolating the host and blocking the IP address. This matches the independent evidence. The additional flag on `smartscreen.exe` stays visible in the report so the analyst can judge it.
 
 ### 4.5 Evaluation
 
 #### **Comparison with Other Systems**
 
-**Comparison with Magnet AXIOM Cyber**:
+The competitor columns are based on publicly available product information at the time of writing. Check current vendor documentation before citing them.
 
-| Feature | Anubis Forensics GUI | Magnet AXIOM Cyber |
-|---------|---------------------|-------------------|
-| **Case Management** | ✅ Custom JSON-based | ✅ Proprietary database |
-| **Remote Acquisition** | ✅ PSTools integration | ✅ Built-in remote tools |
-| **Memory Forensics** | ✅ WinPmem integration | ✅ Advanced memory analysis |
-| **Registry Analysis** | ✅ Comprehensive registry parsing | ✅ Built-in registry analysis |
-| **SRUM Analysis** | ✅ System Resource Usage Monitor | ❌ Limited SRUM support |
-| **USB Analysis** | ✅ USB device timeline reconstruction | ✅ USB device analysis |
-| **Web Analysis** | ✅ Multi-browser support | ✅ Web artifact extraction |
-| **AI Integration** | ✅ OpenAI GPT integration | ❌ Limited AI features |
-| **Cost** | ✅ Open source | ❌ Commercial license |
-| **Customization** | ✅ Highly customizable | ❌ Limited customization |
-| **Platform Support** | ✅ Windows-focused | ✅ Multi-platform |
+| Capability | Anubis Forensics GUI | Autopsy | Magnet AXIOM Cyber |
+|------------|---------------------|---------|-------------------|
+| Licence | Free, source available | Free, open source | Commercial |
+| Platform | Windows desktop (PyQt5) | Desktop application (Java) | Windows desktop |
+| Main focus | Live and remote triage of Windows hosts | Disk image analysis | Enterprise and remote investigations |
+| Remote acquisition | PsExec + SMB, targeted files, memory | Not built in | Agent-based remote collection |
+| Memory analysis | Volatility 3 pipeline with malfind triage and file dumping | Through add-on modules | Supported |
+| Registry, USB, browser | Yes | Yes (ingest modules) | Yes |
+| SRUM | Yes | Not a core feature | Supported |
+| Threat intelligence | VirusTotal file and IP look-ups | Hash sets, add-ons | Integrations available |
+| AI-written report text | Yes, any OpenAI-compatible model, local or cloud | Not built in | AI assistant features in recent versions |
+| Breadth and maturity | Small, focused, unvalidated in court | Mature, widely used | Mature, widely used |
 
-**Comparison with Autopsy**:
+Anubis does not replace either product. Its contribution is a single, small workflow that goes from remote acquisition to a correlated, explained memory report, and a design in which the LLM writes text but never produces the facts.
 
-| Feature | Anubis Forensics GUI | Autopsy |
-|---------|---------------------|---------|
-| **User Interface** | ✅ Modern PyQt5 GUI | ✅ Web-based interface |
-| **Performance** | ✅ Native performance | ⚠️ Web-based limitations |
-| **Memory Analysis** | ✅ Volatility integration | ✅ Memory analysis support |
-| **Registry Analysis** | ✅ Comprehensive registry tools | ✅ Registry analysis |
-| **SRUM Analysis** | ✅ Dedicated SRUM engine | ❌ No SRUM analysis |
-| **USB Analysis** | ✅ USB timeline reconstruction | ⚠️ Basic USB analysis |
-| **Web Analysis** | ✅ Multi-browser artifact extraction | ✅ Web artifact analysis |
-| **AI Features** | ✅ LLM integration | ❌ No AI features |
-| **Remote Acquisition** | ✅ Built-in remote tools | ❌ Limited remote features |
-| **Ease of Use** | ✅ Intuitive workflow | ⚠️ Steep learning curve |
+#### **Qualitative Assessment**
 
-#### **Qualitative Assessment of Performance**
+**Strengths**
+- One guided workflow: case, acquisition, five analyses, report.
+- Every result is stored in the case folder with hashes and timestamps.
+- Findings are correlated (process, parent and child, network contact, dumped file, VirusTotal verdict) instead of being listed per tool.
+- The LLM is optional and replaceable; it can run fully offline on a local model.
+- Failures are reported clearly instead of crashing the application.
 
-**Strengths**:
-- **User Experience**: Intuitive, modern interface designed for forensic professionals
-- **Automation**: AI-powered report generation reduces manual documentation time
-- **Integration**: Seamless integration of multiple forensic tools
-- **Flexibility**: Highly customizable for specific investigation needs
-- **Security**: Secure credential handling and encrypted communications
-- **Comprehensive Analysis**: Five distinct analysis engines covering all major forensic areas
-- **Timeline Reconstruction**: Advanced timeline analysis across multiple artifact types
+**Weaknesses**
+- Windows only, single investigator.
+- Remote acquisition and real memory images still need full end-to-end testing.
+- Correlation is automatic only for memory findings.
+- See section 5.3 for security and forensic-soundness limitations.
 
-**Areas for Improvement**:
-- **Platform Support**: Currently Windows-focused, could expand to other platforms
-- **Advanced Analysis**: Could integrate more advanced forensic analysis tools
-- **Collaboration**: Could add multi-user collaboration features
-- **Real-time Updates**: Could implement real-time case updates and notifications
-- **Performance Optimization**: Could optimize large-scale analysis operations
+#### **Quantitative Assessment**
 
-#### **Quantitative Assessment of Performance**
+All values were measured on the test machine described in section 4.1 in October 2026. Values that could not be measured are listed as such instead of being estimated.
 
-**Performance Metrics**:
+| Operation | Data | Measured time |
+|-----------|------|---------------|
+| Unit test suite | 8 tests | 0.07 s |
+| Registry header parsing | Default user `NTUSER.DAT` | < 0.1 s |
+| Registry plugin analysis | Default user `NTUSER.DAT`, 13 plugins | 0.1 s |
+| Registry comparison | Two copies of the same hive | 0.1 s |
+| USB scan, live registry | 19 devices | < 0.1 s |
+| Web extraction, this machine | Chrome (385 history, 22 downloads) + Brave (500 history, 200 downloads) | 0.9 s |
+| Report with LLM narrative | Sample case, `gemma4:31b` on Ollama Cloud | 2.5–3.3 s |
+| VirusTotal file re-check | 8 files (free API: 4 requests per minute) | 109 s |
+| Memory pipeline on an invalid image | 1 MB random data, 6 plugins, all fail cleanly | 11.7 s |
+| Memory pipeline on a real image | — | Not yet measured |
+| Remote acquisition | — | Not yet measured |
+| SRUM on a real database | — | Not yet measured |
 
-1. **Response Time Analysis**:
-   - UI Navigation: < 100ms
-   - Case Creation: < 500ms
-   - Evidence Collection: < 2 seconds
-   - Remote Connection: < 5 seconds
-   - Memory Acquisition: Varies by system size (typically 1-10 minutes)
-   - Memory Analysis: 2-5 minutes for 4GB dump
-   - Registry Analysis: < 30 seconds
-   - SRUM Analysis: < 1 minute
-   - USB Analysis: < 2 minutes
-   - Web Analysis: < 1 minute
-
-2. **Memory Usage**:
-   - Application Startup: ~50MB
-   - During Operation: ~100-200MB
-   - Memory Acquisition: Additional memory based on target system
-   - Analysis Engines: +50-100MB per active analysis
-
-3. **Storage Efficiency**:
-   - Case Metadata: ~1KB per case
-   - Evidence Storage: Compressed JSON format
-   - Report Generation: ~5-10KB per report
-   - Analysis Results: ~2-5KB per analysis type
-
-4. **Concurrent Operations**:
-   - Maximum Concurrent Cases: 10
-   - Maximum Remote Connections: 5
-   - API Request Throughput: 100 requests/minute
-   - Analysis Engines: 3 concurrent analyses
-
-#### **Performance Metrics**
-
-**Key Performance Indicators (KPIs)**:
-
-1. **Investigation Efficiency**:
-   - Time to Case Creation: 30 seconds
-   - Time to Evidence Collection: 2 minutes
-   - Time to Report Generation: 1 minute
-   - Memory Analysis Time: 3 minutes average
-   - Registry Analysis Time: 30 seconds average
-   - SRUM Analysis Time: 45 seconds average
-   - USB Analysis Time: 1.5 minutes average
-   - Web Analysis Time: 45 seconds average
-   - Overall Investigation Time Reduction: 40-60%
-
-2. **System Reliability**:
-   - Uptime: 99.5%
-   - Error Rate: < 1%
-   - Recovery Time: < 30 seconds
-   - Analysis Success Rate: 95%
-
-3. **User Productivity**:
-   - Cases per Day: 20-30
-   - Evidence Items per Case: 50-100
-   - Analysis Types per Case: 3-5
-   - Report Quality Score: 8.5/10
+The VirusTotal look-ups are limited by the free API rate, not by Anubis.
 
 ### 4.6 Economic Analysis
 
+Figures below are either real prices or are marked for the team to complete. Earlier versions of this chapter contained invented totals and revenue figures; they were removed.
+
 #### **Economic Impact Assessment**
 
-**Human Capital Impact**:
+**Human capital.** The tool targets investigators who must triage Windows machines quickly. Its value is the time saved by not running each tool by hand, not converting outputs, and not writing the first draft of the report. It also lowers the skill needed to read memory analysis results, because suspicious findings are explained in plain language. Using it well still requires forensic training: the tool flags, the analyst decides.
 
-**What People Do**:
-- **Forensic Investigators**: Reduced manual tasks, increased case throughput
-- **Digital Forensics Analysts**: Automated evidence collection and analysis
-- **Law Enforcement**: Faster case resolution and evidence processing
-- **Legal Professionals**: Improved evidence documentation and reporting
-- **IT Security Teams**: Enhanced incident response capabilities
-- **Memory Forensics Specialists**: Streamlined memory analysis workflows
-- **Registry Analysts**: Automated registry artifact extraction
-- **USB Forensics Experts**: Automated timeline reconstruction
-- **Web Forensics Analysts**: Automated browser analysis
+**Financial capital.** All software components used are free:
 
-**Skills Development**:
-- Training requirements for new forensic tools
-- AI/ML literacy for automated analysis
-- Advanced digital forensics techniques
-- Remote acquisition and analysis skills
-- Memory forensics expertise
-- Registry analysis techniques
-- SRUM data interpretation
-- USB device forensics
-- Web artifact analysis
+| Component | Cost | Licence note |
+|-----------|------|--------------|
+| Python, PyQt5, regipy, dissect.esedb, mistune, requests | Free | PyQt5 is GPL v3: a closed-source commercial product would need a commercial PyQt licence |
+| Volatility 3 | Free | Volatility Software License |
+| Sysinternals PsExec and ProcDump, WinPmem, RawCopy, FileBrowser | Free | Check each tool's redistribution terms before shipping them inside the project |
+| VirusTotal API | Free public key | Rate-limited (4 requests per minute) and not for commercial use; commercial use needs a paid licence |
+| Ollama Cloud | Free tier with starter credits | Pro plan $20 per month with $60 of monthly credits; a local model costs nothing |
 
-**Financial Capital Impact**:
+**Manufactured capital.** A standard Windows laptop is enough; no GPU is needed when a cloud LLM is used. Virtual machines for testing can use free hypervisors.
 
-**Cost Savings**:
-- **Software Licensing**: Open-source solution eliminates commercial license costs
-- **Training Costs**: Reduced training time due to intuitive interface
-- **Hardware Costs**: Lower system requirements compared to commercial solutions
-- **Maintenance Costs**: Minimal ongoing maintenance requirements
-- **Analysis Time**: 40-60% reduction in analysis time across all five analysis types
-- **Report Generation**: Automated report generation saves 2-3 hours per case
+**Natural capital.** Remote acquisition avoids travel to the target machine. Local LLM use moves energy consumption to the investigator's workstation instead of a data centre.
 
-**Revenue Generation**:
-- **Forensic Services**: $50,000 - $100,000 per year
-- **Training Programs**: $20,000 - $40,000 per year
-- **Custom Development**: $30,000 - $60,000 per year
-- **Support Services**: $15,000 - $30,000 per year
-- **Specialized Analysis Services**: $25,000 - $50,000 per year
+#### **Project Lifecycle Costs and Benefits**
 
-**Manufactured/Real Capital Impact**:
-
-**Infrastructure Requirements**:
-- **Development Equipment**: Standard development workstations
-- **Testing Environment**: Virtual machines for testing
-- **Deployment Infrastructure**: Windows-based deployment systems
-- **Network Infrastructure**: Secure network for remote acquisitions
-- **Analysis Workstations**: High-performance systems for memory analysis
-- **Storage Systems**: Large storage for memory dumps and analysis results
-
-**Tool Integration**:
-- **PSTools Suite**: Windows system administration tools
-- **Forensic Tools**: Memory acquisition and analysis tools
-- **Volatility Framework**: Memory forensics analysis
-- **Registry Analysis Tools**: Windows Registry parsing utilities
-- **SRUM Analysis Tools**: System Resource Usage Monitor utilities
-- **USB Analysis Tools**: USB device forensics utilities
-- **Web Analysis Tools**: Browser artifact extraction tools
-- **AI/ML Infrastructure**: OpenAI API integration
-- **Storage Systems**: Local and network storage solutions
-
-**Natural Capital Impact**:
-
-**Environmental Considerations**:
-- **Energy Efficiency**: Optimized code reduces computational requirements
-- **Digital Transformation**: Reduces paper-based documentation
-- **Remote Operations**: Reduces travel requirements for investigations
-- **Sustainable Development**: Open-source approach promotes knowledge sharing
-- **Resource Optimization**: Efficient analysis reduces hardware requirements
-
-#### **Project Lifecycle Cost Analysis**
-
-**When and Where Costs/Benefits Accrue**:
-
-**Development Phase (Months 1-6)**:
-- **Costs**: Development time, testing equipment, software licenses
-- **Benefits**: Knowledge acquisition, skill development, prototype validation
-
-**Testing Phase (Months 7-8)**:
-- **Costs**: Testing infrastructure, user training, bug fixes
-- **Benefits**: System validation, user feedback, performance optimization
-
-**Deployment Phase (Months 9-12)**:
-- **Costs**: Production deployment, user training, documentation
-- **Benefits**: Operational efficiency, case processing improvements
-
-**Maintenance Phase (Ongoing)**:
-- **Costs**: Updates, bug fixes, user support
-- **Benefits**: Continuous improvement, new features, user satisfaction
+| Phase | Costs | Benefits |
+|-------|-------|----------|
+| Prototype (June 2025) | Team time | Working GUI and acquisition proof of concept |
+| Repair and completion (September–October 2026) | Team time, API keys on free tiers | Running application, five working analyses, tests |
+| Operation | API usage beyond free tiers, maintenance | Faster triage and reporting per case |
 
 #### **Input Requirements and Costs**
 
-**Project Inputs**:
+| Input | Quantity | Cost |
+|-------|----------|------|
+| Development effort | **[fill in: team size and hours]** | **[fill in]** |
+| Development and test laptop | 1 (existing) | No new purchase |
+| Test virtual machines | **[fill in]** | Free hypervisor |
+| Software licences | — | $0 |
+| VirusTotal and Ollama Cloud | Free tiers | $0 during the project |
 
-**Development Resources**:
-- **Human Resources**: 2-3 developers for 6 months
-- **Hardware**: Development workstations ($2,000 each)
-- **Software**: Development tools and licenses ($500)
-- **Testing**: Virtual machines and test environments ($1,000)
+#### **Revenue and Who Benefits**
 
-**Operational Resources**:
-- **Deployment Hardware**: Production servers ($5,000)
-- **Network Infrastructure**: Secure networking equipment ($3,000)
-- **Training Materials**: Documentation and training resources ($1,000)
-
-**Analysis-Specific Resources**:
-- **Memory Analysis Tools**: Volatility framework and plugins ($1,000)
-- **Registry Analysis Tools**: Registry parsing utilities ($500)
-- **SRUM Analysis Tools**: SRUM database tools ($500)
-- **USB Analysis Tools**: USB forensics utilities ($500)
-- **Web Analysis Tools**: Browser artifact extraction tools ($500)
-
-**Original vs. Actual Costs**:
-
-| Component | Original Estimate | Actual Cost | Variance |
-|-----------|------------------|-------------|----------|
-| Development Time | 4 months | 6 months | +50% |
-| Hardware Costs | $3,000 | $4,500 | +50% |
-| Software Licenses | $1,000 | $500 | -50% |
-| Testing Infrastructure | $2,000 | $2,500 | +25% |
-| Analysis Tools | $1,000 | $3,000 | +200% |
-| **Total** | **$7,000** | **$10,500** | **+50%** |
-
-**Final Bill of Materials**:
-
-**Hardware Components**:
-- Development Workstations (3x): $6,000
-- Testing Servers (2x): $4,000
-- Network Equipment: $3,000
-- Storage Systems: $2,000
-- Analysis Workstations (2x): $4,000
-- **Hardware Total**: $19,000
-
-**Software Components**:
-- Development Tools: $500
-- Testing Software: $1,000
-- Forensic Tools: $2,000
-- AI/ML Services: $1,000
-- Analysis Tools: $3,000
-- **Software Total**: $7,500
-
-**Additional Equipment Costs**:
-- Virtual Machine Licenses: $1,000
-- Cloud Testing Environment: $2,000
-- Security Tools: $1,500
-- **Additional Total**: $4,500
-
-**Total Project Cost**: $31,000
-
-#### **Revenue Generation and Profitability**
-
-**How Much Does the Project Earn**:
-
-**Direct Revenue Streams**:
-- **Forensic Services**: $50,000 - $100,000 per year
-- **Training Programs**: $20,000 - $40,000 per year
-- **Custom Development**: $30,000 - $60,000 per year
-- **Support Services**: $15,000 - $30,000 per year
-- **Specialized Analysis Services**: $25,000 - $50,000 per year
-
-**Indirect Benefits**:
-- **Time Savings**: 40-60% reduction in investigation time
-- **Quality Improvement**: Enhanced evidence documentation
-- **Compliance**: Better regulatory compliance
-- **Reputation**: Enhanced professional reputation
-- **Comprehensive Analysis**: Five analysis types provide complete forensic picture
-
-**Who Profits**:
-- **Forensic Investigators**: Increased efficiency and case throughput
-- **Law Enforcement Agencies**: Faster case resolution
-- **Legal Professionals**: Better evidence documentation
-- **Organizations**: Reduced investigation costs
-- **Society**: Improved justice system efficiency
-- **Memory Forensics Specialists**: Streamlined analysis workflows
-- **Registry Analysts**: Automated artifact extraction
-- **USB Forensics Experts**: Automated timeline reconstruction
-- **Web Forensics Analysts**: Automated browser analysis
+Anubis is an academic project and does not earn revenue. Realistic routes, if it were developed further, are training use in forensics courses, paid support or customisation for small incident-response teams, and a hosted LLM option. Any commercial route must first resolve the licence points in the table above. The beneficiaries are investigators and the organisations they serve, through shorter triage and clearer reports.
 
 #### **Timing Analysis**
 
-**Product Development Timeline**:
+The timeline below is taken from the git history. Intermediate commits from the period in between were later consolidated, so only the milestones are shown.
 
-**When Products Emerge**:
-- **Month 3**: Initial prototype with basic case management
-- **Month 6**: Beta version with remote acquisition capabilities
-- **Month 8**: Release candidate with AI integration
-- **Month 10**: Five analysis engines implementation
-- **Month 12**: Production-ready system
+| Date | Milestone |
+|------|-----------|
+| 18 June 2025 | First commit: PyQt5 GUI, case management, remote acquisition prototype |
+| 21 June 2025 | Feature update and first version of the documentation |
+| 28 September 2026 | Consolidated rework: application starts again, all five analyses working, rule-based report with LLM narrative, evidence store |
+| 5 October 2026 | Registry crash and evidence table fixes, honest VirusTotal status, VirusTotal file re-check, unit tests |
 
-**Product Lifecycle**:
-- **Development**: 12 months
-- **Testing**: 2 months
-- **Deployment**: 1 month
-- **Maintenance**: Ongoing (5+ years expected)
-
-**Maintenance and Operation Costs**:
-- **Monthly Maintenance**: $2,000
-- **Annual Updates**: $10,000
-- **User Support**: $5,000 per year
-- **Infrastructure**: $3,000 per year
-- **Analysis Tool Updates**: $2,000 per year
-
-**Development Timeline Comparison**:
-
-**Original Gantt Chart (Planned)**:
-```
-Month 1-2: Requirements Analysis
-Month 3-4: Core Development
-Month 5-6: Testing and Integration
-Month 7: Deployment
-```
-
-**Actual Gantt Chart (Achieved)**:
-```
-Month 1-2: Requirements Analysis ✅
-Month 3-5: Core Development ⚠️ (Extended)
-Month 6-7: Testing and Integration ⚠️ (Extended)
-Month 8-9: AI Integration (Added)
-Month 10-11: Five Analysis Engines (Added)
-Month 12: Production Deployment ✅
-```
-
-**Post-Project Continuation**:
-- **Maintenance Phase**: Ongoing bug fixes and updates
-- **Enhancement Phase**: New features and capabilities
-- **Expansion Phase**: Platform support and integrations
-- **Community Phase**: Open-source community development
-- **Analysis Enhancement**: Advanced analysis algorithms and techniques
+**[fill in: the originally planned schedule, to compare with the actual dates above]**
 
 ---
 
@@ -1913,390 +1032,115 @@ Month 12: Production Deployment ✅
 ### 5.1 Summary of Work
 
 #### **Project Accomplishments**
-
-**Core System Development:**
-- **Complete GUI Application**: Successfully developed a comprehensive PyQt5-based forensic analysis platform
-- **Five Analysis Engines**: Implemented Memory, Registry, SRUM, USB, and Web artifact analysis capabilities
-- **Remote Acquisition System**: Built secure remote file system access and memory acquisition functionality
-- **Case Management System**: Created complete case lifecycle management with evidence tracking
-- **AI Integration**: Successfully integrated OpenAI GPT for automated report generation
-- **Professional Documentation**: Produced comprehensive technical documentation and user guides
-
-**Technical Achievements:**
-- **Modular Architecture**: Implemented MVC pattern with service layer abstraction
-- **Cross-Platform Compatibility**: Designed for Windows with extensible architecture
-- **Performance Optimization**: Achieved sub-second response times for UI operations
-- **Security Implementation**: Secure credential handling and encrypted communications
-- **Error Handling**: Comprehensive error handling and logging systems
-- **Testing Framework**: Implemented unit and integration testing scenarios
-
-**Forensic Capabilities:**
-- **Memory Forensics**: Volatility framework integration for comprehensive memory analysis
-- **Registry Analysis**: Windows Registry parsing for system artifacts and user activity
-- **SRUM Analysis**: System Resource Usage Monitor data extraction and analysis
-- **USB Forensics**: USB device artifact collection and timeline reconstruction
-- **Web Artifact Analysis**: Multi-browser support for comprehensive web activity analysis
+- A working Windows desktop application that guides an investigator from case creation through acquisition and analysis to a report.
+- Remote acquisition through PsExec and SMB: targeted artifact collection (including locked files through RawCopy), a remote file browser, full memory images with WinPmem and process dumps with ProcDump.
+- Five analysis options: memory (Volatility 3), web, SRUM, registry and USB, each storing its results in the case.
+- A memory pipeline that goes beyond running plugins: it selects suspicious processes, dumps and hashes their files, checks them on VirusTotal and correlates processes, network contacts and verdicts.
+- A report generator in which rules produce every fact and a replaceable LLM writes only the narrative, with export to Markdown, HTML and PDF.
+- Validation on a known-infected memory sample, where Anubis correctly identified Mars Stealer.
+- Automated unit tests and a scripted end-to-end GUI test.
 
 #### **Major Learning Outcomes**
+- **Memory forensics in practice**: Volatility 3 plugins and their JSON output, what malfind actually detects, and why its results need an analyst (the `smartscreen.exe` false positive).
+- **Windows artifacts**: registry hive structure and transaction logs, the ESE format of SRUM, USB device property keys, Chromium and Firefox database schemas.
+- **Remote acquisition**: PsExec, administrative shares, locked-file copying, and the footprint these leave on the target.
+- **Desktop application engineering**: Qt threading rules, learned through a real crash, and keeping the interface responsive.
+- **Responsible use of AI**: separating facts from narrative, giving the model only verified data, and checking its output. The model once repeated "clean" for a file that was never scanned, which led to the "Not checked" fix.
+- **Software maintenance**: pinned dependencies that stop installing, secrets committed to git, and the value of tests that find bugs before users do.
 
-**Technical Skills Acquired:**
-- **Advanced Python Development**: Mastered PyQt5, async programming, and type hints
-- **Forensic Tool Integration**: Learned to integrate and automate forensic analysis tools
-- **AI/ML Integration**: Gained experience with OpenAI API and natural language processing
-- **System Administration**: Developed expertise in Windows system administration and PSTools
-- **Database Management**: Learned SQLite database design and optimization
-- **Security Implementation**: Acquired knowledge of secure credential handling and encryption
-
-**Forensic Knowledge Gained:**
-- **Digital Forensics Principles**: Deep understanding of forensic methodology and best practices
-- **Memory Analysis**: Expertise in volatile memory forensics and artifact extraction
-- **Registry Forensics**: Comprehensive knowledge of Windows Registry analysis
-- **Timeline Analysis**: Mastered chronological evidence reconstruction techniques
-- **Evidence Preservation**: Learned proper evidence handling and chain of custody procedures
-- **Report Generation**: Developed skills in automated forensic report creation
-
-**Project Management Skills:**
-- **Requirements Analysis**: Learned to translate forensic needs into technical requirements
-- **System Design**: Developed skills in designing complex forensic analysis systems
-- **Documentation**: Mastered technical documentation and user guide creation
-- **Testing Strategy**: Implemented comprehensive testing frameworks
-- **Version Control**: Gained expertise in Git and collaborative development
-
-#### **Work Remaining and System Improvements**
-
-**Immediate Enhancements Needed:**
-- **Platform Expansion**: Extend support to Linux and macOS operating systems
-- **Advanced Analysis**: Integrate more sophisticated forensic analysis algorithms
-- **Real-time Monitoring**: Implement live system monitoring capabilities
-- **Collaboration Features**: Add multi-user collaboration and case sharing
-- **Performance Optimization**: Optimize large-scale analysis operations
-- **User Interface**: Enhance UI/UX with more intuitive workflows
-
-**Technical Improvements:**
-- **Database Scaling**: Implement distributed database architecture for large-scale deployments
-- **API Enhancement**: Develop RESTful API for third-party integrations
-- **Plugin System**: Create extensible plugin architecture for custom analysis modules
-- **Cloud Integration**: Add cloud-based storage and processing capabilities
-- **Mobile Support**: Develop mobile companion applications for field investigations
-- **Automation**: Implement advanced automation for repetitive forensic tasks
-
-**Forensic Enhancements:**
-- **Advanced Memory Analysis**: Integrate more sophisticated memory analysis techniques
-- **Network Forensics**: Add comprehensive network traffic analysis capabilities
-- **Malware Analysis**: Implement automated malware detection and analysis
-- **Encryption Analysis**: Add support for encrypted artifact analysis
-- **Timeline Visualization**: Create advanced timeline visualization and correlation tools
-- **Evidence Validation**: Implement automated evidence integrity verification
+#### **Work Remaining**
+- End-to-end tests on a Windows virtual machine: remote connection, targeted acquisition, memory dump and Volatility on a real image.
+- SRUM and registry acquisition on a machine with Administrator rights.
+- Fixture-based tests for the web, registry, USB, SRUM, memory and report services, and a continuous-integration workflow that runs them.
+- The other items of the 1.0 release gate in `ROADMAP.md`.
 
 #### **Future Plans for the Software Package**
-
-**Short-term Goals (6-12 months):**
-- **Open Source Release**: Release the platform as open-source software
-- **Community Development**: Establish developer community and contribution guidelines
-- **Documentation Enhancement**: Create comprehensive API documentation and tutorials
-- **Performance Optimization**: Optimize analysis engines for better performance
-- **User Training**: Develop training materials and certification programs
-- **Integration Partnerships**: Partner with forensic tool vendors for enhanced integration
-
-**Medium-term Goals (1-2 years):**
-- **Commercial Version**: Develop enterprise version with advanced features
-- **Cloud Platform**: Create cloud-based forensic analysis platform
-- **Mobile Applications**: Develop mobile apps for field investigations
-- **AI Enhancement**: Implement advanced AI/ML for automated analysis
-- **International Expansion**: Localize software for international markets
-- **Academic Partnerships**: Partner with universities for research and development
-
-**Long-term Vision (3-5 years):**
-- **Industry Standard**: Establish Anubis Forensics GUI as industry standard
-- **Global Platform**: Create global forensic analysis network
-- **Advanced AI**: Implement next-generation AI for predictive analysis
-- **Quantum Computing**: Prepare for quantum computing integration
-- **Research Platform**: Establish research platform for forensic innovation
-- **Educational Tool**: Become primary educational tool for forensic training
+The plan follows `ROADMAP.md`:
+- **1.0**: complete the release gate above and tag a tested version.
+- **1.1 Evidence integrity**: an append-only case manifest with source path, acquisition time, size and SHA-256; analyzer warnings shown in the case and the report; a visible run log with tool versions.
+- **1.2 Operational hardening**: packaged application with a pinned Python runtime, safe cancellation and cleanup of long operations, documented supported Windows versions and privileges.
 
 ### 5.2 Development
 
 #### **New Tools and Techniques Learned**
 
-**Development Tools:**
-- **PyQt5 Framework**: Mastered modern GUI development with PyQt5
-- **Visual Studio Code**: Advanced IDE usage with Python extensions and debugging
-- **Git Version Control**: Comprehensive Git workflow and collaborative development
-- **Virtual Environments**: Python virtual environment management and dependency isolation
-- **Docker Containerization**: Learned containerization for deployment and testing
-- **CI/CD Pipelines**: Implemented continuous integration and deployment workflows
-
-**Forensic Tools Integration:**
-- **Volatility Framework**: Advanced memory forensics and plugin development
-- **WinPmem**: Memory acquisition and analysis techniques
-- **PSTools Suite**: Windows system administration and remote execution
-- **Registry Analysis Tools**: Windows Registry parsing and analysis utilities
-- **SRUM Analysis Tools**: System Resource Usage Monitor database analysis
-- **Browser Forensics Tools**: Multi-browser artifact extraction and analysis
-
-**AI/ML Technologies:**
-- **OpenAI GPT API**: Large Language Model integration and prompt engineering
-- **Natural Language Processing**: Automated text analysis and report generation
-- **Machine Learning**: Basic ML concepts for pattern recognition and classification
-- **Data Processing**: Advanced data processing and analysis techniques
-- **API Integration**: RESTful API development and integration patterns
-
-**System Administration:**
-- **Windows Administration**: Advanced Windows system administration techniques
-- **Network Security**: Network security and secure communication protocols
-- **Database Management**: SQLite database design, optimization, and management
-- **Performance Monitoring**: System performance monitoring and optimization
-- **Security Hardening**: System security hardening and vulnerability assessment
+| Area | Tools and techniques |
+|------|---------------------|
+| GUI | PyQt5 widgets and style sheets, `QThread` workers and signals, `QWebEngineView`, PDF export with `QPdfWriter` |
+| Memory forensics | Volatility 3 CLI and JSON renderer, malfind, dumpfiles, symbol tables |
+| Windows artifacts | regipy, dissect.esedb, `winreg`, Chromium and Firefox SQLite schemas |
+| Acquisition | PsExec, SMB administrative shares, RawCopy, WinPmem, ProcDump |
+| Threat intelligence | VirusTotal API v3: file and IP reports, rate limits |
+| AI | OpenAI-compatible chat APIs, prompt design for structured JSON output, local models with Ollama |
+| Engineering | Virtual environments, `unittest`, scripted GUI testing, git history clean-up |
 
 #### **Independent Learning and Research**
-
-**Literature Review:**
-- **Digital Forensics Journals**: Reviewed leading digital forensics research papers
-- **Forensic Tool Documentation**: Studied documentation for commercial and open-source tools
-- **Academic Papers**: Analyzed academic research on memory forensics and artifact analysis
-- **Industry Standards**: Researched forensic standards and best practices
-- **Technology Trends**: Studied emerging trends in digital forensics and cybersecurity
-
-**Online Resources:**
-- **Forensic Blogs**: Followed leading forensic blogs and technical articles
-- **Video Tutorials**: Watched tutorials on forensic tool usage and techniques
-- **Online Courses**: Completed online courses in digital forensics and cybersecurity
-- **Technical Forums**: Participated in forensic and cybersecurity forums
-- **Webinars**: Attended webinars on advanced forensic techniques
-
-**Hands-on Research:**
-- **Tool Testing**: Conducted extensive testing of various forensic tools
-- **Methodology Development**: Developed and refined forensic analysis methodologies
-- **Case Studies**: Analyzed real-world forensic case studies and scenarios
-- **Performance Testing**: Conducted performance testing and optimization research
-- **Security Research**: Researched security vulnerabilities and attack vectors
-
-**Collaborative Learning:**
-- **Peer Reviews**: Participated in peer reviews of forensic tools and techniques
-- **Expert Consultation**: Consulted with forensic experts and practitioners
-- **Community Engagement**: Engaged with forensic and cybersecurity communities
-- **Knowledge Sharing**: Shared findings and techniques with the forensic community
-- **Mentorship**: Received mentorship from experienced forensic professionals
+- Official documentation of Volatility 3, regipy, dissect, Sysinternals, VirusTotal API v3 and Ollama.
+- Analysis of a public memory-forensics sample to validate the tool.
+- **[fill in: courses, papers, supervisor meetings and other sources the team used]**
 
 ### 5.3 Critical Appraisal of Work
 
 #### **Negative Aspects and Limitations**
 
-**Technical Limitations:**
-- **Platform Dependency**: Currently limited to Windows operating system
-- **Performance Issues**: Large-scale analysis can be resource-intensive
-- **Memory Constraints**: Memory analysis limited by available system resources
-- **Scalability Challenges**: Single-user architecture limits collaborative work
-- **Integration Gaps**: Limited integration with commercial forensic tools
-- **Real-time Limitations**: No real-time monitoring or live analysis capabilities
+**Security**
+- The remote password is passed to PsExec and `net use` on the command line, so it is visible in the local process list while they run.
+- FileBrowser runs on the target with `--noauth` on port 8080 for the duration of the session, so anyone on that network could browse the target's `C:` drive until it is cleaned up.
+- When a cloud LLM is used, findings (process names, IP addresses, hashes) leave the investigator's machine.
 
-**Forensic Limitations:**
-- **Analysis Depth**: Some analysis types lack depth compared to specialized tools
-- **Evidence Validation**: Limited automated evidence integrity verification
-- **Timeline Accuracy**: Timeline reconstruction may have accuracy limitations
-- **Artifact Recovery**: Some advanced artifact recovery techniques not implemented
-- **Encryption Handling**: Limited support for encrypted artifact analysis
-- **Network Forensics**: No comprehensive network traffic analysis capabilities
+**Forensic soundness**
+- PsExec installs a temporary service on the target, and tools are copied to its disk. This changes the evidence and must be documented in the case.
+- Hashes are computed after acquisition on the investigator's side. The tool does not yet hash files on the target before copying, so it cannot prove that the copy matches the source.
+- Malfind is a heuristic: on the sample case it also flagged `smartscreen.exe`, which is most likely benign.
+- The LLM narrative must be reviewed by the investigator. It is generated from verified findings, but its wording can still be wrong.
 
-**User Experience Issues:**
-- **Learning Curve**: Steep learning curve for non-technical users
-- **Interface Complexity**: Some advanced features may be difficult to discover
-- **Documentation Gaps**: Some features lack comprehensive documentation
-- **Error Handling**: Error messages could be more user-friendly
-- **Workflow Optimization**: Some workflows could be more streamlined
-- **Accessibility**: Limited accessibility features for users with disabilities
+**Coverage and testing**
+- Remote acquisition, Volatility on a real image, SRUM on a real database and registry acquisition have not been tested end to end.
+- Unit tests cover configuration and VirusTotal selection only.
+- Correlation across analysis options is not automated outside the memory report.
+- Live browsers lock their cookie databases (seen with Brave), so they must be closed before local extraction.
 
-**Development Challenges:**
-- **Code Quality**: Some code sections could benefit from refactoring
-- **Testing Coverage**: Limited automated testing for complex scenarios
-- **Documentation**: Technical documentation could be more comprehensive
-- **Version Control**: Some development practices could be improved
-- **Code Review**: Limited peer review during development
-- **Performance Optimization**: Some algorithms could be optimized further
+**Platform and scale**
+- Windows only, one investigator, one case at a time.
+- VirusTotal checks are slow on the free key (4 requests per minute).
 
 #### **Areas for Improvement**
-
-**Technical Improvements:**
-- **Cross-Platform Support**: Extend support to Linux and macOS
-- **Performance Optimization**: Implement more efficient algorithms and data structures
-- **Scalability**: Design for multi-user and distributed architectures
-- **Integration**: Enhance integration with commercial forensic tools
-- **Real-time Capabilities**: Add live monitoring and analysis features
-- **Security**: Implement additional security measures and audit trails
-
-**Forensic Enhancements:**
-- **Advanced Analysis**: Implement more sophisticated analysis algorithms
-- **Evidence Validation**: Add comprehensive evidence integrity verification
-- **Timeline Accuracy**: Improve timeline reconstruction accuracy
-- **Artifact Recovery**: Implement advanced artifact recovery techniques
-- **Encryption Support**: Add support for encrypted artifact analysis
-- **Network Analysis**: Implement comprehensive network forensics capabilities
-
-**User Experience Improvements:**
-- **Interface Redesign**: Simplify and streamline user interface
-- **Workflow Optimization**: Optimize user workflows for efficiency
-- **Documentation**: Create comprehensive user documentation and tutorials
-- **Training Materials**: Develop training materials and certification programs
-- **Accessibility**: Implement accessibility features for all users
-- **Localization**: Add support for multiple languages and regions
-
-**Development Process Improvements:**
-- **Code Quality**: Implement stricter code quality standards
-- **Testing**: Expand automated testing coverage
-- **Documentation**: Improve technical documentation standards
-- **Code Review**: Implement mandatory code review processes
-- **Performance Monitoring**: Add performance monitoring and optimization
-- **Security Auditing**: Implement regular security audits and assessments
+- Hash files on the target before copying and compare them after transfer.
+- Replace FileBrowser's open web interface with an authenticated, short-lived session, or remove it in favour of targeted collection.
+- Avoid passwords on the command line, for example by using an existing authenticated session.
+- Record every action taken on a target in the case log, so that the tool's own footprint is documented.
+- Expand automated tests to all services with small, versioned sample inputs.
 
 ### 5.4 Proposal for Enhancement or Re-design
 
+The proposals below are limited to what fits the current architecture and a small team.
+
 #### **Architectural Improvements**
-
-**Microservices Architecture:**
-- **Service Decomposition**: Break down monolithic application into microservices
-- **API Gateway**: Implement API gateway for service communication
-- **Load Balancing**: Add load balancing for improved performance
-- **Service Discovery**: Implement service discovery for dynamic scaling
-- **Containerization**: Use Docker containers for deployment and scaling
-- **Orchestration**: Implement Kubernetes for container orchestration
-
-**Cloud-Native Design:**
-- **Cloud Deployment**: Design for cloud-native deployment
-- **Auto-scaling**: Implement automatic scaling based on demand
-- **Multi-tenancy**: Support multiple organizations and users
-- **Data Lake**: Implement data lake architecture for large-scale data storage
-- **Stream Processing**: Add real-time stream processing capabilities
-- **Edge Computing**: Support edge computing for distributed analysis
-
-**Advanced Database Architecture:**
-- **Distributed Database**: Implement distributed database architecture
-- **Data Sharding**: Add data sharding for improved performance
-- **Caching Layer**: Implement multi-level caching system
-- **Data Warehousing**: Add data warehousing for analytics
-- **Backup and Recovery**: Implement comprehensive backup and recovery
-- **Data Archiving**: Add automated data archiving capabilities
+- **Case manifest**: one append-only, hashed log per case recording every acquisition, analysis and report, as a basis for chain of custody.
+- **Plugin interface for analyzers**: a common `analyze(case, inputs) -> findings` contract, so new artifact types can be added without changing the GUI.
+- **Shared findings model**: all analyzers write findings in one format, which makes cross-artifact correlation and a unified report possible.
 
 #### **Feature Enhancements**
+- **Unified timeline** across memory, web, USB, registry and SRUM.
+- **More artifacts**: Windows event logs (EVTX), Prefetch, Amcache and scheduled tasks, all of which can already be collected by targeted acquisition.
+- **YARA scanning** of dumped files and memory images.
+- **Report sections for every analysis option**, not only memory.
 
-**Advanced Analysis Capabilities:**
-- **Machine Learning Integration**: Implement ML algorithms for pattern recognition
-- **Predictive Analysis**: Add predictive analysis capabilities
-- **Anomaly Detection**: Implement automated anomaly detection
-- **Behavioral Analysis**: Add user and system behavioral analysis
-- **Threat Intelligence**: Integrate threat intelligence feeds
-- **Risk Assessment**: Implement automated risk assessment algorithms
-
-**Collaboration Features:**
-- **Multi-user Support**: Add comprehensive multi-user support
-- **Case Sharing**: Implement secure case sharing between investigators
-- **Workflow Management**: Add workflow management and approval processes
-- **Audit Trails**: Implement comprehensive audit trails
-- **Role-based Access**: Add role-based access control
-- **Team Management**: Implement team management and collaboration tools
-
-**Real-time Capabilities:**
-- **Live Monitoring**: Add live system monitoring capabilities
-- **Real-time Alerts**: Implement real-time alerting system
-- **Live Analysis**: Add live forensic analysis capabilities
-- **Stream Processing**: Implement real-time data stream processing
-- **Event Correlation**: Add real-time event correlation
-- **Automated Response**: Implement automated incident response
-
-**Mobile and Web Support:**
-- **Web Interface**: Develop comprehensive web interface
-- **Mobile Applications**: Create mobile applications for field work
-- **Progressive Web App**: Implement progressive web app capabilities
-- **Offline Support**: Add offline analysis capabilities
-- **Cross-platform Sync**: Implement cross-platform synchronization
-- **Push Notifications**: Add push notification system
-
-#### **Technology Modernization**
-
-**AI/ML Integration:**
-- **Deep Learning**: Implement deep learning for advanced analysis
-- **Natural Language Processing**: Enhance NLP capabilities
-- **Computer Vision**: Add computer vision for image analysis
-- **Predictive Modeling**: Implement predictive modeling algorithms
-- **Automated Classification**: Add automated evidence classification
-- **Intelligent Automation**: Implement intelligent process automation
-
-**Blockchain Integration:**
-- **Evidence Integrity**: Use blockchain for evidence integrity verification
-- **Chain of Custody**: Implement blockchain-based chain of custody
-- **Smart Contracts**: Add smart contracts for automated processes
-- **Decentralized Storage**: Implement decentralized evidence storage
-- **Cryptographic Verification**: Add cryptographic verification systems
-- **Immutable Records**: Implement immutable audit records
-
-**Quantum Computing Preparation:**
-- **Quantum Algorithms**: Prepare for quantum computing algorithms
-- **Post-quantum Cryptography**: Implement post-quantum cryptography
-- **Quantum-resistant Security**: Add quantum-resistant security measures
-- **Quantum Simulation**: Implement quantum simulation capabilities
-- **Future-proofing**: Design for quantum computing integration
-- **Research Collaboration**: Collaborate with quantum computing researchers
-
-#### **Educational and Training Enhancements**
-
-**Learning Management System:**
-- **Online Training**: Implement comprehensive online training system
-- **Interactive Tutorials**: Add interactive tutorials and simulations
-- **Certification Programs**: Develop certification programs
-- **Progress Tracking**: Implement progress tracking and assessment
-- **Virtual Labs**: Create virtual forensic laboratories
-- **Knowledge Base**: Build comprehensive knowledge base
-
-**Research Platform:**
-- **Academic Partnerships**: Partner with academic institutions
-- **Research Tools**: Develop tools for forensic research
-- **Data Sharing**: Implement secure data sharing for research
-- **Publication Platform**: Create platform for research publications
-- **Conference Integration**: Integrate with forensic conferences
-- **Collaborative Research**: Enable collaborative research projects
-
-**Community Development:**
-- **Open Source Community**: Build active open source community
-- **Developer Documentation**: Create comprehensive developer documentation
-- **Plugin Ecosystem**: Develop plugin ecosystem for extensions
-- **Contributor Guidelines**: Establish contributor guidelines
-- **Code of Conduct**: Implement code of conduct for community
-- **Mentorship Program**: Create mentorship program for new contributors
+#### **Technology Improvements**
+- **Local LLM as the default**, so that no evidence leaves the workstation, with the cloud as an option.
+- **Packaging** into a single installer with a pinned Python runtime.
+- **Continuous integration** that installs the dependencies and runs all tests on every change.
 
 #### **Implementation Roadmap**
 
-**Phase 1 (6 months):**
-- **Architecture Redesign**: Implement microservices architecture
-- **Cloud Deployment**: Deploy to cloud infrastructure
-- **API Development**: Develop comprehensive RESTful API
-- **Mobile App**: Create mobile application
-- **Performance Optimization**: Optimize performance and scalability
-- **Security Enhancement**: Implement additional security measures
+| Phase | Content |
+|-------|---------|
+| 1.0 | VM end-to-end tests, fixture tests for all services, CI, tagged release |
+| 1.1 | Case manifest, hash-before-copy, warnings in the report, run log |
+| 1.2 | Installer, safe cancellation, documented supported systems and privileges |
+| 2.0 | Shared findings model, unified timeline, new artifact types, YARA, full multi-artifact report |
 
-**Phase 2 (12 months):**
-- **AI/ML Integration**: Integrate advanced AI/ML capabilities
-- **Real-time Features**: Add real-time monitoring and analysis
-- **Collaboration Tools**: Implement collaboration features
-- **Advanced Analysis**: Add advanced forensic analysis capabilities
-- **Training Platform**: Develop comprehensive training platform
-- **Community Building**: Build active user and developer community
-
-**Phase 3 (18 months):**
-- **Blockchain Integration**: Implement blockchain-based features
-- **Quantum Preparation**: Prepare for quantum computing
-- **Research Platform**: Develop research and academic platform
-- **International Expansion**: Expand to international markets
-- **Industry Partnerships**: Establish industry partnerships
-- **Commercial Version**: Launch commercial enterprise version
-
-**Phase 4 (24 months):**
-- **Global Platform**: Establish global forensic analysis platform
-- **Advanced AI**: Implement next-generation AI capabilities
-- **Research Leadership**: Establish leadership in forensic research
-- **Industry Standard**: Become industry standard for forensic analysis
-- **Educational Leadership**: Lead forensic education and training
-- **Innovation Hub**: Create innovation hub for forensic technology
-
-This comprehensive enhancement and re-design proposal provides a roadmap for transforming Anubis Forensics GUI into a world-class forensic analysis platform that serves the needs of investigators, researchers, and the broader forensic community.
+Multi-user collaboration, real-time monitoring and cloud deployment are separate products and are not part of this roadmap.
 
 ---
 
