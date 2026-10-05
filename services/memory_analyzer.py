@@ -229,6 +229,75 @@ class VirusTotalClient:
         }
 
 
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def select_files_for_virustotal(folder: str, max_lookups: int = 8) -> list[dict]:
+    """Pick the dumped files worth looking up on VirusTotal, most important first.
+
+    Sources are the previous VirusTotal results, the dumped file inventory and the
+    files actually present in ``dumped_memory``. Empty files, Volatility's JSON
+    output and duplicate hashes are skipped. Order: files that were already in
+    the VirusTotal list, then executables, then DLLs, then the largest files.
+    """
+    candidates = {}
+
+    def add(name, path, sha256, md5, size, previous):
+        if not sha256 or sha256 == EMPTY_SHA256 or not size or str(name).lower().endswith(".json"):
+            return
+        entry = candidates.setdefault(sha256, {"file_name": name, "path": path, "sha256": sha256,
+                                               "md5": md5 or "", "size": size, "previous": previous})
+        entry["previous"] = entry["previous"] or previous
+        entry["md5"] = entry["md5"] or md5 or ""
+
+    previous = load_json(folder, "virustotal_results") or []
+    if isinstance(previous, dict):
+        previous = [previous]
+    for item in previous:
+        if isinstance(item, dict):
+            add(item.get("filename"), item.get("full_path", ""), item.get("sha256"), item.get("md5"),
+                item.get("file_size"), True)
+    for item in load_json(folder, "dumped_memory_features") or []:
+        if isinstance(item, dict):
+            add(item.get("file_name"), item.get("path", ""), item.get("sha256"), item.get("md5"), item.get("size"), False)
+    for item in collect_dumped_file_features(os.path.join(folder, "dumped_memory")):
+        add(item["file_name"], item["path"], item["sha256"], item["md5"], item["size"], False)
+
+    def priority(entry):
+        name = str(entry["file_name"]).lower()
+        return (not entry["previous"], ".exe" not in name, ".dll" not in name, -int(entry["size"] or 0))
+
+    return sorted(candidates.values(), key=priority)[:max_lookups]
+
+
+def check_dumped_files_on_virustotal(folder: str, client: "VirusTotalClient", max_lookups: int = 8,
+                                     progress=None) -> list[dict]:
+    """Look up dumped file hashes on VirusTotal and save ``virustotal_results.json``.
+
+    Only hashes are sent; the files themselves are never uploaded. Earlier results
+    for hashes that are not re-checked are kept.
+    """
+    progress = progress or (lambda message: None)
+    selected = select_files_for_virustotal(folder, max_lookups)
+    results = []
+    for index, entry in enumerate(selected, 1):
+        progress(f"VirusTotal {index}/{len(selected)}: {str(entry['file_name'])[:70]} ... (free API: 4 requests/minute)")
+        report = client.file_report(entry["sha256"])
+        results.append({"filename": entry["file_name"], "full_path": entry["path"], "md5": entry["md5"],
+                        "sha256": entry["sha256"], "file_size": entry["size"], **report})
+        progress(f"  -> {report['malware_status']} ({report['virustotal_detected']}/{report['virustotal_total']})")
+
+    checked = {item["sha256"] for item in results}
+    previous = load_json(folder, "virustotal_results") or []
+    if isinstance(previous, dict):
+        previous = [previous]
+    kept = [item for item in previous if isinstance(item, dict) and item.get("sha256") not in checked]
+    merged = sorted(results + kept, key=lambda item: -(item.get("virustotal_detected") or 0))
+    with open(os.path.join(folder, "virustotal_results.json"), "w", encoding="utf-8") as handle:
+        json.dump(merged, handle, indent=2)
+    return merged
+
+
 # ------------------------------------------------------------------- pipeline
 class MemoryAnalyzer:
     def __init__(self, dump_path: str, output_dir: str, progress=None, cancel_check=None):

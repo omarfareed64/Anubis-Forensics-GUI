@@ -221,6 +221,11 @@ class RemoteConnectionPage(BasePage):
         self.selected_case_path = case_path
         self._reload_evidence_table()
 
+    def showEvent(self, event):
+        """Refresh the table whenever the page is shown: other pages add evidence too."""
+        super().showEvent(event)
+        self._reload_evidence_table()
+
     # ---------------------------------------------------------------- layout
     def setup_page_content(self):
         self.main_layout.setSpacing(0)

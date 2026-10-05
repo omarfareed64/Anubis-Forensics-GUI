@@ -22,7 +22,8 @@ from services.web_artifact_extractor import extract_all_web_artifacts, extract_l
 from services.usb_analyzer import get_usb_devices, get_usb_devices_from_hive, analyze_usb_forensics, usb_report_html
 from services.srum_analyzer import analyze_srum
 from services.memory_analyzer import (MemoryAnalyzer, load_json, classify_ip, scan_dumped_files_for_ips,
-                                      collect_dumped_file_features, VirusTotalClient)
+                                      collect_dumped_file_features, VirusTotalClient,
+                                      select_files_for_virustotal, check_dumped_files_on_virustotal)
 from services.evidence_store import record_evidence, human_size
 from utils.paths import (case_subdir, memory_analysis_dir, CASE_MEMORY_SUBDIR, CASE_WEB_SUBDIR, CASE_SRUM_SUBDIR,
                          CASE_USB_SUBDIR, CASE_REGISTRY_SUBDIR, CASE_EVIDENCE_SUBDIR, SAMPLE_MEMORY_ANALYSIS_DIR)
@@ -81,19 +82,20 @@ class RegistryWorker(QThread):
 
     def __init__(self, analyzer, operation, **kwargs):
         super().__init__()
-        self.analyzer, self.operation, self.kwargs = analyzer, operation, kwargs
+        # ``analyzer`` is kept for API compatibility; a private instance is created in run().
+        self.operation, self.kwargs = operation, kwargs
 
     def run(self):
-        self.analyzer.progress_updated.connect(self.progress_updated.emit)
-        self.analyzer.header_output.connect(self.header_output.emit)
+        # A fresh analyzer owned by this thread: sharing one QObject across threads and
+        # connecting/disconnecting its signals from here made PyQt abort the application.
+        analyzer = RegistryAnalyzer()
+        analyzer.progress_updated.connect(self.progress_updated)
+        analyzer.header_output.connect(self.header_output)
         try:
-            function = getattr(self.analyzer, self.operation)
+            function = getattr(analyzer, self.operation)
             success, message = function(**self.kwargs)
         except Exception as error:  # noqa: BLE001
             success, message = False, str(error)
-        finally:
-            self.analyzer.progress_updated.disconnect(self.progress_updated.emit)
-            self.analyzer.header_output.disconnect(self.header_output.emit)
         self.operation_completed.emit(self.operation, success, message)
 
 
@@ -314,6 +316,10 @@ class AnalysisPage(BasePage):
         self.memory_cancel_button.setVisible(False)
         self.memory_cancel_button.clicked.connect(self.cancel_memory_analysis)
         toolbar.addWidget(self.memory_cancel_button)
+        vt_files_button = QPushButton("Check files on VirusTotal")
+        vt_files_button.setStyleSheet(SMALL_BUTTON)
+        vt_files_button.clicked.connect(self.check_files_with_virustotal)
+        toolbar.addWidget(vt_files_button)
         vt_button = QPushButton("Check IPs on VirusTotal")
         vt_button.setStyleSheet(SMALL_BUTTON)
         vt_button.clicked.connect(self.check_ips_with_virustotal)
@@ -459,6 +465,8 @@ class AnalysisPage(BasePage):
         for result in results:
             detected, total = result.get("virustotal_detected", 0), result.get("virustotal_total", 0)
             status = result.get("malware_status", "Unknown")
+            if not total and not detected:
+                status = "Not checked"  # no engine scanned it, so it must not be shown as clean
             color = "#d9534f" if detected else ("#28a745" if status == "Clean" else "#888")
             engines = result.get("detections") or {}
             engine_rows = "".join(f"<tr><td style='padding:4px;border:1px solid #ddd'><b>{esc(e)}</b></td>"
@@ -486,21 +494,59 @@ class AnalysisPage(BasePage):
         rows = [{"ip": ip, "processes": ", ".join(sorted(owners))} for ip, owners in public.items()]
         return render_table_html("Public IP addresses seen in netscan", rows, ["ip", "processes"], note=note)
 
-    def check_ips_with_virustotal(self):
-        """Look up every public IP of the current netscan output on VirusTotal."""
+    def _virustotal_ready(self):
+        """Common checks for the VirusTotal buttons. Returns a client or None."""
         if not self.memory_dir:
             QMessageBox.warning(self, "No data", "No memory analysis data loaded.")
-            return
+            return None
+        if os.path.normcase(os.path.abspath(self.memory_dir)) == os.path.normcase(os.path.abspath(SAMPLE_MEMORY_ANALYSIS_DIR)):
+            QMessageBox.warning(self, "Select a case", "Open a case that has memory analysis results first. "
+                                "The bundled sample data is read-only.")
+            return None
         client = VirusTotalClient()
         if not client.enabled:
             QMessageBox.warning(self, "VirusTotal key missing", "Set VIRUSTOTAL_API_KEY in the .env file first.")
+            return None
+        if self.memory_worker and self.memory_worker.isRunning():
+            QMessageBox.information(self, "In Progress", "A memory analysis or VirusTotal check is already running.")
+            return None
+        return client
+
+    def check_files_with_virustotal(self):
+        """Look up the hashes of already-dumped files on VirusTotal (no upload)."""
+        client = self._virustotal_ready()
+        if not client:
+            return
+        folder = self.memory_dir
+        selected = select_files_for_virustotal(folder)
+        if not selected:
+            QMessageBox.information(self, "Nothing to check", "No dumped files with hashes were found for this case.")
+            return
+        minutes = max(1, round(len(selected) * client.delay_seconds / 60))
+        self.memory_log_lines = []
+        self._append_memory_log(f"Checking {len(selected)} dumped file(s) on VirusTotal, about {minutes} minute(s). "
+                                "Only hashes are sent, files are never uploaded.")
+        self.memory_worker = WorkerThread(check_dumped_files_on_virustotal, folder, client, pass_progress=True)
+        self.memory_worker.progress.connect(self._append_memory_log)
+        self.memory_worker.done.connect(lambda _r: self._show_core_view("virustotal"))
+        self.memory_worker.failed.connect(lambda m: QMessageBox.critical(self, "VirusTotal failed", m))
+        self.memory_worker.start()
+
+    def _show_core_view(self, option_name):
+        """Switch the memory view to a Core Analysis Files option (used after VirusTotal checks)."""
+        self.active_memory_tab = "Core Analysis Files"
+        for button in self.memory_sub_option_panels["Core Analysis Files"].property("buttons"):
+            button.setChecked(button.text() == option_name)
+        self._on_memory_tab_click()
+
+    def check_ips_with_virustotal(self):
+        """Look up every public IP of the current netscan output on VirusTotal."""
+        client = self._virustotal_ready()
+        if not client:
             return
         ips = sorted(self._public_ips(self.memory_dir))
         if not ips:
             QMessageBox.information(self, "Nothing to check", "No public IP addresses in the netscan output.")
-            return
-        if self.memory_worker and self.memory_worker.isRunning():
-            QMessageBox.information(self, "In Progress", "A memory analysis is already running.")
             return
         folder = self.memory_dir
         self.memory_log_lines = []
@@ -516,7 +562,7 @@ class AnalysisPage(BasePage):
 
         self.memory_worker = WorkerThread(lookup, pass_progress=True)
         self.memory_worker.progress.connect(self._append_memory_log)
-        self.memory_worker.done.connect(lambda _r: self._on_memory_tab_click())
+        self.memory_worker.done.connect(lambda _r: self._show_core_view("virustotal IP"))
         self.memory_worker.failed.connect(lambda m: QMessageBox.critical(self, "VirusTotal failed", m))
         self.memory_worker.start()
 

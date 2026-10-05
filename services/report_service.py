@@ -173,6 +173,10 @@ class ReportService:
                 continue
             detections = result.get("virustotal_detected", 0) or 0
             total = result.get("virustotal_total", 0) or 0
+            status = result.get("malware_status", "Unknown")
+            if total == 0 and detections == 0:
+                # No engine scanned the file (no API key, or unknown to VirusTotal): never call it clean.
+                status = "Not checked"
             malicious_binaries.append({
                 "file": result.get("filename", "Unknown"),
                 "sha256": result.get("sha256", ""),
@@ -180,7 +184,7 @@ class ReportService:
                 "pid": self._pid_from_path(result.get("full_path", "") or result.get("path", "")),
                 "detections": detections,
                 "total": total,
-                "status": result.get("malware_status", "Unknown"),
+                "status": status,
                 "signatures": self._top_signatures(result),
             })
         malicious_binaries.sort(key=lambda b: -b["detections"])
@@ -340,8 +344,11 @@ class ReportService:
         if detected:
             parts.append(f"VirusTotal reported {len(detected)} malicious file(s); the highest detection ratio was "
                          f"{detected[0]['detections']}/{detected[0]['total']} for {detected[0]['file']}.")
+        elif any(b["total"] > 0 for b in findings["malicious_binaries"]):
+            checked = sum(1 for b in findings["malicious_binaries"] if b["total"] > 0)
+            parts.append(f"None of the {checked} dumped file(s) checked on VirusTotal were detected as malicious.")
         elif findings["malicious_binaries"]:
-            parts.append("None of the dumped files were detected by VirusTotal.")
+            parts.append("The dumped files were not checked against VirusTotal, so their reputation is unknown.")
         linked = [c for c in findings["network_iocs"] if c["suspicious_process"]]
         if linked:
             ips = ", ".join(sorted({c['remote_ip'] for c in linked}))
